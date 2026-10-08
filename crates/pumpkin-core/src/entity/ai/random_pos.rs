@@ -7,6 +7,7 @@ use crate::entity::mob::Mob;
 use crate::world::World;
 
 const ATTEMPTS: usize = 10;
+const QUARTER_TURN: f64 = std::f64::consts::FRAC_PI_2;
 
 /// A random reachable land position around the mob.
 pub fn land_random_pos(
@@ -18,6 +19,43 @@ pub fn land_random_pos(
     generate_random_pos(
         || {
             let direction = generate_random_direction(horizontal_dist, vertical_dist);
+            let pos = generate_random_pos_toward_direction(
+                mob,
+                f64::from(horizontal_dist),
+                restrict,
+                direction,
+            )?;
+            move_pos_up_out_of_solid(mob, pos)
+        },
+        |_| 0.0,
+    )
+}
+
+/// A random reachable land position in a half-circle behind the direction towards `towards`.
+/// Vanilla `LandRandomPos.getPosTowards`.
+pub fn land_random_pos_towards(
+    mob: &dyn Mob,
+    horizontal_dist: i32,
+    vertical_dist: i32,
+    towards: Vector3<f64>,
+) -> Option<Vector3<f64>> {
+    let mob_pos = mob.get_entity().pos.load();
+    let direction = Vector3::new(
+        towards.x - mob_pos.x,
+        towards.y - mob_pos.y,
+        towards.z - mob_pos.z,
+    );
+    let restrict = mob_restricted(mob, f64::from(horizontal_dist));
+    generate_random_pos(
+        || {
+            let direction = generate_random_direction_within_radians(
+                0.0,
+                f64::from(horizontal_dist),
+                vertical_dist,
+                direction.x,
+                direction.z,
+                QUARTER_TURN,
+            )?;
             let pos = generate_random_pos_toward_direction(
                 mob,
                 f64::from(horizontal_dist),
@@ -61,6 +99,30 @@ fn generate_random_direction(horizontal_dist: i32, vertical_dist: i32) -> BlockP
         rand::random_range(0..2 * vertical_dist + 1) - vertical_dist,
         rand::random_range(0..2 * horizontal_dist + 1) - horizontal_dist,
     )
+}
+
+/// Vanilla `RandomPos.generateRandomDirectionWithinRadians`: a block offset within a cone
+/// behind the (x, z) direction, with the distance scaled by sqrt(2) like vanilla's spread.
+fn generate_random_direction_within_radians(
+    min_horizontal_dist: f64,
+    max_horizontal_dist: f64,
+    vertical_dist: i32,
+    x_direction: f64,
+    z_direction: f64,
+    max_radians: f64,
+) -> Option<BlockPos> {
+    let center = z_direction.atan2(x_direction) - QUARTER_TURN;
+    let radians = center + (2.0 * rand::random::<f64>() - 1.0) * max_radians;
+    let distance = (min_horizontal_dist
+        + rand::random::<f64>().sqrt() * (max_horizontal_dist - min_horizontal_dist))
+        * std::f64::consts::SQRT_2;
+    let x = -distance * radians.sin();
+    let z = distance * radians.cos();
+    if x.abs() > max_horizontal_dist || z.abs() > max_horizontal_dist {
+        return None;
+    }
+    let y = rand::random_range(0..2 * vertical_dist + 1) - vertical_dist;
+    Some(BlockPos::floored(x, f64::from(y), z))
 }
 
 fn mob_restricted(mob: &dyn Mob, horizontal_dist: f64) -> bool {

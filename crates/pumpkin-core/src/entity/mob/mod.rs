@@ -631,9 +631,9 @@ impl MobEntity {
         Self::check_surface_water_animal_spawn_rules(world, pos)
     }
 
-    pub fn try_attack(&self, caller: &dyn EntityBase, target: &dyn EntityBase) {
+    pub fn try_attack(&self, caller: &dyn EntityBase, target: &dyn EntityBase) -> bool {
         if self.living_entity.dead.load(Relaxed) {
-            return;
+            return false;
         }
 
         let attack_damage: f32 =
@@ -657,6 +657,7 @@ impl MobEntity {
                 .last_attack_time
                 .store(self.living_entity.entity.age.load(Relaxed), Relaxed);
         }
+        damaged
     }
 
     fn get_attack_box(&self, attack_range: f64) -> BoundingBox {
@@ -783,7 +784,7 @@ impl MobEntity {
     }
 }
 
-pub trait Mob: EntityBase + Send + Sync {
+pub trait Mob: EntityBase + Send + Sync + std::any::Any {
     fn get_random(&self) -> rand::rngs::ThreadRng {
         rand::rng()
     }
@@ -799,6 +800,11 @@ pub trait Mob: EntityBase + Send + Sync {
             return false;
         }
         self.get_mob_entity().living_entity.can_attack(target)
+    }
+
+    /// Vanilla `Mob.doHurtTarget`. Brains' `MeleeAttack` runs the swing and cooldown themselves.
+    fn do_hurt_target(&self, target: &dyn EntityBase) -> bool {
+        self.get_mob_entity().try_attack(self.get_entity(), target)
     }
 
     /// Takes the navigation lock, so callers must not already hold it.

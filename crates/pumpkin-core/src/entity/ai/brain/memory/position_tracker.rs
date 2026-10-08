@@ -14,6 +14,11 @@ pub trait PositionTracker: Send + Sync + fmt::Debug {
     fn current_position(&self) -> Vector3<f64>;
     fn current_block_position(&self) -> BlockPos;
     fn is_visible_by(&self, ctx: &VisibilityContext<'_>) -> bool;
+
+    /// Vanilla `MoveToTargetSink.isWalkTargetSpectator`: only entity targets can be spectators.
+    fn is_spectator(&self) -> bool {
+        false
+    }
 }
 
 pub struct EntityTracker {
@@ -78,6 +83,12 @@ impl PositionTracker for EntityTracker {
         ctx.brain
             .get(types::NEAREST_VISIBLE_LIVING_ENTITIES)
             .is_some_and(|visible| visible.contains(self.entity.as_ref(), ctx))
+    }
+
+    fn is_spectator(&self) -> bool {
+        self.entity
+            .get_player()
+            .is_some_and(crate::entity::player::Player::is_spectator)
     }
 }
 
