@@ -189,6 +189,15 @@ impl MobEntity {
         self.position_target_range.load(Relaxed) != -1
     }
 
+    /// Replaces the navigator with a mob-specific one, e.g. the amphibious
+    /// navigation vanilla's `Drowned.createNavigation` installs.
+    pub fn set_navigator(&self, navigator: crate::entity::ai::pathfinder::Navigator) {
+        *self
+            .navigator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = navigator;
+    }
+
     pub fn is_in_position_target_range(&self) -> bool {
         self.is_in_position_target_range_pos(&self.living_entity.entity.block_pos.load())
     }
@@ -835,6 +844,15 @@ pub trait Mob: EntityBase + Send + Sync {
         EquipmentSlot::HEAD
     }
 
+    /// Vanilla `Entity.isPushedByFluid`: whether flowing water pushes this mob.
+    fn is_pushed_by_fluids(&self) -> bool {
+        true
+    }
+
+    /// Vanilla `Entity.updateSwimming` for mobs. No-op by default: only mobs
+    /// that override it (the drowned) take the swimming pose.
+    fn update_swimming(&self) {}
+
     fn remove_when_far_away(&self, _distance_sq: f64) -> bool {
         true
     }
@@ -1476,6 +1494,10 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
     fn get_living_entity(&self) -> Option<&LivingEntity> {
         Some(&self.get_mob_entity().living_entity)
+    }
+
+    fn is_pushed_by_fluids(&self) -> bool {
+        Mob::is_pushed_by_fluids(self)
     }
 
     fn cast_any(&self) -> &dyn std::any::Any {
