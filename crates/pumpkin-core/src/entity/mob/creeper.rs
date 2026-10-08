@@ -5,12 +5,14 @@ use std::sync::{
 
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{
+    effect::StatusEffect,
     entity::EntityType,
     item::Item,
     sound::{Sound, SoundCategory},
 };
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::codec::var_int::VarInt;
+use uuid::Uuid;
 
 use crate::entity::{
     Entity, EntityBase,
@@ -125,8 +127,60 @@ impl CreeperEntity {
             radius * multiplier,
             crate::world::ExplosionInteraction::Mob,
         );
-        // TODO: spawn area effect cloud with potion effects
+        self.spawn_lingering_cloud();
         entity.remove();
+    }
+
+    /// Mirrors vanilla `Creeper#spawnLingeringCloud`.
+    /// Leaves an effect cloud carrying the creeper's active potion effects, if it has any.
+    fn spawn_lingering_cloud(&self) {
+        let active_effects: Vec<(&'static StatusEffect, i32, u8, bool, bool, bool)> = {
+            let effects = self
+                .mob_entity
+                .living_entity
+                .active_effects
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            effects
+                .values()
+                .map(|effect| {
+                    (
+                        effect.effect_type,
+                        effect.duration,
+                        effect.amplifier,
+                        effect.ambient,
+                        effect.show_particles,
+                        effect.show_icon,
+                    )
+                })
+                .collect()
+        };
+        if active_effects.is_empty() {
+            return;
+        }
+
+        let entity = &self.mob_entity.living_entity.entity;
+        let world = entity.world.load();
+        let pos = entity.pos.load();
+        let cloud_entity = crate::entity::Entity::from_uuid(
+            Uuid::new_v4(),
+            world.clone(),
+            pos,
+            &EntityType::AREA_EFFECT_CLOUD,
+        );
+        let cloud = crate::entity::area_effect_cloud::AreaEffectCloudEntity::create(
+            cloud_entity,
+            ItemStack::new(0, &Item::GLASS_BOTTLE),
+            active_effects,
+            300,
+            2.5,
+            20,
+            10,
+            -0.5,
+            0,
+        );
+
+        world.spawn_entity(cloud);
     }
 }
 
