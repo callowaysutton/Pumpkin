@@ -30,19 +30,33 @@ impl ItemBehaviour for PlaceOnWaterBlockItem {
             Fluid::from_state_id(state_id).is_some()
         };
 
-        let Some((hit_pos, _)) = world.raycast(start_pos, end_pos, checker) else {
+        let Some((hit_pos, hit_face)) = world.raycast(start_pos, end_pos, checker) else {
             return;
         };
 
         let above_pos = hit_pos.up();
         let above_state = world.get_block_state(&above_pos);
-        if above_state.is_air() {
-            let (placed_block, sound) = if item.id == Item::LILY_PAD.id {
-                (&Block::LILY_PAD, Sound::BlockLilyPadPlace)
-            } else {
-                (&Block::FROGSPAWN, Sound::BlockFrogspawnPlace)
-            };
+        let (placed_block, sound) = if item.id == Item::LILY_PAD.id {
+            (&Block::LILY_PAD, Sound::BlockLilyPadPlace)
+        } else {
+            (&Block::FROGSPAWN, Sound::BlockFrogspawnPlace)
+        };
 
+        // Vanilla `BlockItem#place` requires the state to survive (`canSurvive`) before
+        // placing, which rejects flowing water and lava hits from the raycast.
+        if above_state.is_air()
+            && world.block_registry.can_place_at(
+                None,
+                Some(&world),
+                world.as_ref(),
+                Some(player),
+                placed_block,
+                placed_block.default_state,
+                &above_pos,
+                Some(hit_face),
+                None,
+            )
+        {
             world.set_block_state(
                 &above_pos,
                 placed_block.default_state.id,
