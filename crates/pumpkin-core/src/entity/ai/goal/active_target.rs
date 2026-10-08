@@ -124,6 +124,14 @@ impl ActiveTargetGoal {
         self
     }
 
+    /// Vanilla `NearestAttackableTargetGoal.setUnseenMemoryTicks`: how long the mob
+    /// keeps targeting after losing sight of its target.
+    #[must_use]
+    pub fn set_unseen_memory_ticks(mut self: Box<Self>, ticks: i32) -> Box<Self> {
+        self.track_target_goal.max_time_without_visibility = ticks;
+        self
+    }
+
     #[must_use]
     pub fn with_default(
         mob: &MobEntity,
