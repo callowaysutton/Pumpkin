@@ -21,19 +21,6 @@ use super::common::{
     update_flanking_rails_shape,
 };
 
-// TODO: Fix redstone rail power extension behavior
-// Currently, redstone sources (like redstone torch) can incorrectly extend rail power
-// when placed at any powered rail position. In Minecraft, power should only extend
-// when a redstone source is placed at the LAST powered rail or at an unpowered rail.
-//
-// Example of INCORRECT current behavior:
-// redstone_torch [powered_rail×9] [unpowered_rail×3]
-// If redstone torch is placed at 6th powered rail → power extends (WRONG)
-//
-// Example of CORRECT Minecraft behavior:
-// redstone_torch [powered_rail×9] [unpowered_rail×3]
-// Power should only extend when redstone source is at 9th rail (last powered) or unpowered rail
-
 #[pumpkin_block("minecraft:activator_rail")]
 pub struct ActivatorRailBlock;
 
@@ -100,13 +87,10 @@ impl BlockBehaviour for ActivatorRailBlock {
             return;
         }
 
+        // Mirrors vanilla updateState: only recompute this rail's power here. The chain
+        // propagates through the neighbor updates of each rail's own state flip; walking
+        // it here would re-power rails far away that received no neighbor update.
         self.update_powered_state(args.world, args.block, args.position);
-
-        let state_id = args.world.get_block_state_id(args.position);
-        let rail_props = RailProperties::new(state_id, args.block);
-
-        self.update_connected_rails(args.world, args.position, &rail_props, true, 0);
-        self.update_connected_rails(args.world, args.position, &rail_props, false, 0);
     }
 
     fn on_state_replaced(&self, args: OnStateReplacedArgs<'_>) {
