@@ -15,9 +15,9 @@ use rand::{RngExt, rng};
 
 use crate::{
     block::{
-        BlockBehaviour, CanPlaceAtArgs, EmitsRedstonePowerArgs, GetRedstonePowerArgs,
-        GetStateForNeighborUpdateArgs, OnPlaceArgs, OnScheduledTickArgs, OnStateReplacedArgs,
-        PlayerPlacedArgs,
+        BlockBehaviour, BlockIsReplacing, CanPlaceAtArgs, EmitsRedstonePowerArgs,
+        GetRedstonePowerArgs, GetStateForNeighborUpdateArgs, OnPlaceArgs, OnScheduledTickArgs,
+        OnStateReplacedArgs, PlayerPlacedArgs, blocks::vine::get_nearest_looking_directions,
     },
     world::World,
 };
@@ -33,21 +33,34 @@ impl BlockBehaviour for TripwireHookBlock {
         let mut props = TripwireHookProperties::default(args.block);
         props.powered = false;
         props.attached = false;
-        if Self::can_place_at(args.world, args.position, args.direction) {
-            props.facing = args.direction.opposite().to_cardinal_direction();
-            return props.to_state_id(args.block);
+        // Vanilla `TripWireHookBlock#getStateForPlacement` tries the player's nearest looking
+        // directions in order and uses the first horizontal one that can support the hook.
+        let nearest_directions = get_nearest_looking_directions(
+            args.player,
+            args.replacing != BlockIsReplacing::None,
+            args.direction,
+        );
+        for direction in nearest_directions {
+            if direction.is_horizontal() {
+                props.facing = direction.opposite().to_cardinal_direction();
+                if Self::can_place_at(args.world, args.position, direction) {
+                    return props.to_state_id(args.block);
+                }
+            }
         }
-        args.block.default_state.id
+        // Vanilla returns `null`, which makes the placement fail instead of dropping a
+        // Facing-north hook that a neighbour update would remove on the next tick.
+        Block::AIR.default_state.id
     }
 
     fn can_place_at(&self, args: CanPlaceAtArgs<'_>) -> bool {
         let props = TripwireHookProperties::from_state_id(args.state.id);
-
-        Self::can_place_at(
-            args.block_accessor,
-            args.position,
-            props.facing.to_block_direction(),
-        )
+        // During placement the candidate facing is not written to the state yet, so prefer the
+        // placement direction (which points at the support block) over the default state.
+        let direction = args
+            .direction
+            .unwrap_or_else(|| props.facing.opposite().to_block_direction());
+        Self::can_place_at(args.block_accessor, args.position, direction)
     }
 
     fn player_placed(&self, args: PlayerPlacedArgs<'_>) {
@@ -130,6 +143,8 @@ impl TripwireHookBlock {
         }
     }
 
+    /// `face` is the direction from the hook to the block it is mounted on. Vanilla
+    /// `TripWireHookBlock#canSurvive` checks that block's face pointing back at the hook.
     pub fn can_place_at(
         world: &dyn BlockAccessor,
         block_pos: &BlockPos,
@@ -140,7 +155,7 @@ impl TripwireHookBlock {
         }
         let place_block_pos = block_pos.offset(face.to_offset());
         let place_block_state = world.get_block_state(&place_block_pos);
-        place_block_state.is_side_solid(face)
+        place_block_state.is_side_solid(face.opposite())
     }
 
     #[expect(clippy::too_many_lines)]
