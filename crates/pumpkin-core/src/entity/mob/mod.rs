@@ -965,6 +965,11 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    /// Vanilla `LivingEntity.onClimbable` per-mob override, see `EntityBase::on_climbable`.
+    fn mob_on_climbable(&self) -> bool {
+        false
+    }
+
     fn as_ageable(&self) -> Option<&dyn crate::entity::ageable::AgeableMob> {
         None
     }
@@ -1561,6 +1566,10 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
     fn get_y_velocity_drag(&self) -> Option<f64> {
         self.get_mob_y_velocity_drag()
+    }
+
+    fn on_climbable(&self) -> bool {
+        self.mob_on_climbable()
     }
 
     fn get_experience_reward(&self, _killer: Option<&dyn EntityBase>) -> u32 {
