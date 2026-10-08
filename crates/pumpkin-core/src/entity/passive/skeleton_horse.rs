@@ -1,6 +1,6 @@
 use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicI32, AtomicU8, Ordering},
+    Arc, OnceLock, Weak,
+    atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering},
 };
 
 use crossbeam::atomic::AtomicCell;
@@ -16,7 +16,8 @@ use crate::entity::{
     ageable::{AgeableData, AgeableMob},
     ai::goal::{
         escape_danger::EscapeDangerGoal, look_around::RandomLookAroundGoal,
-        look_at_entity::LookAtEntityGoal, swim::SwimGoal, wander_around::WanderAroundGoal,
+        look_at_entity::LookAtEntityGoal, skeleton_trap::SkeletonTrapGoal, swim::SwimGoal,
+        wander_around::WanderAroundGoal,
     },
     mob::{Mob, MobEntity},
     passive::animal::Animal,
@@ -29,12 +30,21 @@ pub const FLAG_EATING: u8 = 16;
 pub const FLAG_STANDING: u8 = 32;
 pub const FLAG_OPEN_MOUTH: u8 = 64;
 
+/// Vanilla `SkeletonHorse.TRAP_MAX_LIFE`: a trap horse despawns after 15 minutes without a player.
+const TRAP_MAX_LIFE: i32 = 18000;
+
 pub struct SkeletonHorseEntity {
     pub mob_entity: MobEntity,
     pub ageable_data: AgeableData,
     pub flags: AtomicU8,
     pub temper: AtomicI32,
     pub owner: AtomicCell<Option<Uuid>>,
+    is_trap: AtomicBool,
+    trap_time: AtomicI32,
+    /// Whether `SkeletonTrapGoal` is currently registered in the goal selector.
+    trap_goal_armed: AtomicBool,
+    /// Weak self-reference used to build the trap goal after construction/NBT load.
+    self_weak: OnceLock<Weak<Self>>,
 }
 
 impl SkeletonHorseEntity {
@@ -46,12 +56,17 @@ impl SkeletonHorseEntity {
             flags: AtomicU8::new(0),
             temper: AtomicI32::new(0),
             owner: AtomicCell::new(None),
+            is_trap: AtomicBool::new(false),
+            trap_time: AtomicI32::new(0),
+            trap_goal_armed: AtomicBool::new(false),
+            self_weak: OnceLock::new(),
         };
         let mob_arc = Arc::new(horse);
         let mob_weak: Weak<dyn Mob> = {
             let mob_arc: Arc<dyn Mob> = mob_arc.clone();
             Arc::downgrade(&mob_arc)
         };
+        let _ = mob_arc.self_weak.set(Arc::downgrade(&mob_arc));
 
         {
             let mut goal_selector = mob_arc
@@ -106,11 +121,57 @@ impl SkeletonHorseEntity {
     pub fn set_saddled(&self, val: bool) {
         self.set_flag(FLAG_SADDLE, val);
     }
+
+    /// Vanilla `setTrap(false)` inside `SkeletonTrapGoal.tick`: disarm the trap without touching
+    /// the goal selector, whose mutex the trap goal's tick already holds.
+    pub(crate) fn disarm_trap(&self) {
+        self.is_trap.store(false, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn is_trap(&self) -> bool {
+        self.is_trap.load(Ordering::Relaxed)
+    }
+
+    /// Vanilla `SkeletonHorse.setTrap`: keeps the trap goal in sync with the trap flag.
+    pub fn set_trap(&self, trap: bool) {
+        if self.is_trap.swap(trap, Ordering::Relaxed) == trap {
+            return;
+        }
+
+        if trap {
+            let Some(horse) = self.self_weak.get().and_then(Weak::upgrade) else {
+                return;
+            };
+            let mut goal_selector = self
+                .mob_entity
+                .goals_selector
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // The goal stays registered but dormant after it fires (so a re-arm needs a fresh
+            // one): drop the stale goal, then add the armed one. Vanilla re-adds a new goal here
+            // because it removes the fired goal during its own tick.
+            goal_selector.remove_goals::<SkeletonTrapGoal>();
+            goal_selector.add_goal(1, Box::new(SkeletonTrapGoal::new(&horse)));
+            self.trap_goal_armed.store(true, Ordering::Relaxed);
+        } else if self.trap_goal_armed.swap(false, Ordering::Relaxed) {
+            self.mob_entity
+                .goals_selector
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove_goals::<SkeletonTrapGoal>();
+        }
+    }
 }
 
 impl AgeableMob for SkeletonHorseEntity {
     fn get_ageable_data(&self) -> &AgeableData {
         &self.ageable_data
+    }
+
+    /// Vanilla `SkeletonHorse.canAgeUp` always returns `false`.
+    fn can_age_up(&self) -> bool {
+        false
     }
 }
 
@@ -136,6 +197,8 @@ impl Mob for SkeletonHorseEntity {
         if let Some(owner) = self.owner.load() {
             nbt.put_uuid("Owner", owner);
         }
+        nbt.put_bool("SkeletonTrap", self.is_trap());
+        nbt.put_int("SkeletonTrapTime", self.trap_time.load(Ordering::Relaxed));
     }
 
     fn mob_read_nbt(&self, nbt: &NbtCompound) {
@@ -149,6 +212,11 @@ impl Mob for SkeletonHorseEntity {
         if let Some(owner) = nbt.get_uuid("Owner") {
             self.owner.store(Some(owner));
         }
+        self.trap_time.store(
+            nbt.get_int("SkeletonTrapTime").unwrap_or(0),
+            Ordering::Relaxed,
+        );
+        self.set_trap(nbt.get_bool("SkeletonTrap").unwrap_or(false));
     }
 
     fn get_mob_entity(&self) -> &MobEntity {
@@ -156,6 +224,14 @@ impl Mob for SkeletonHorseEntity {
     }
 
     fn mob_tick(&self, _caller: &dyn EntityBase) {
+        // Vanilla `SkeletonHorse.aiStep`: trap horses that no player keeps loaded despawn after
+        // `TRAP_MAX_LIFE` ticks.
+        if !self.mob_entity.persistence_required.load(Ordering::Relaxed)
+            && self.is_trap()
+            && self.trap_time.fetch_add(1, Ordering::Relaxed) >= TRAP_MAX_LIFE
+        {
+            self.get_entity().remove();
+        }
         self.ageable_ai_step();
     }
 
@@ -175,9 +251,14 @@ impl Mob for SkeletonHorseEntity {
     }
 
     fn mob_interact(&self, player: &Arc<Player>, item_stack: &mut ItemStack) -> bool {
+        // Vanilla `SkeletonHorse.mobInteract` passes unless the horse is tamed.
+        if !self.is_tame() {
+            return false;
+        }
+
         let item = item_stack.get_item();
 
-        if self.is_tame() && item == &Item::SADDLE && !self.is_saddled() && !self.is_baby() {
+        if item == &Item::SADDLE && !self.is_saddled() && !self.is_baby() {
             self.set_saddled(true);
             item_stack.decrement_unless_creative(player.gamemode.load(), 1);
             let entity = self.get_entity();
