@@ -171,11 +171,19 @@ impl SculkSpreader {
         self.cursors.clear();
     }
 
-    /// Returns a reference to the active cursors (for testing).
-    #[cfg(test)]
+    /// Returns a reference to the active cursors.
     #[must_use]
     pub fn cursors(&self) -> &[ChargeCursor] {
         &self.cursors
+    }
+
+    /// Replaces all cursors with those loaded from saved data, respecting
+    /// the [`MAX_CURSORS`] limit.
+    pub fn load_cursors(&mut self, cursors: impl IntoIterator<Item = ChargeCursor>) {
+        self.cursors.clear();
+        for cursor in cursors {
+            self.add_cursor(cursor);
+        }
     }
 
     /// Main update loop over all active cursors.

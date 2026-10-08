@@ -7029,6 +7029,65 @@ impl World {
         }
     }
 
+    /// Dispatches an entity death to any sculk catalysts within their
+    /// listener radius, mirroring vanilla's `ENTITY_DIE` game-event delivery.
+    ///
+    /// `death_pos` is the dead entity's position. Only the first catalyst in
+    /// range consumes the death (vanilla marks the mob right after the first
+    /// listener handles it), so the remaining ones do nothing.
+    ///
+    /// Returns `true` if a catalyst consumed the mob's experience.
+    pub fn handle_sculk_catalyst_death(
+        self: &Arc<Self>,
+        death_pos: Vector3<f64>,
+        charge: i32,
+        mob: &Arc<dyn crate::entity::EntityBase>,
+    ) -> bool {
+        use crate::block::entities::sculk_catalyst::{LISTENER_RADIUS, SculkCatalystBlockEntity};
+        // Vanilla: `BlockPos.containing(sourcePosition.relative(Direction.UP, 0.5))`.
+        let source_pos = BlockPos::containing(death_pos.x, death_pos.y + 0.5, death_pos.z);
+        // The listener radius is 8, so at most a 2x2 chunk area can hold a
+        // catalyst in range; scan those chunks' block entities only.
+        let radius = LISTENER_RADIUS;
+        let min_chunk = BlockPos::new(
+            source_pos.0.x - radius,
+            source_pos.0.y,
+            source_pos.0.z - radius,
+        )
+        .chunk_position();
+        let max_chunk = BlockPos::new(
+            source_pos.0.x + radius,
+            source_pos.0.y,
+            source_pos.0.z + radius,
+        )
+        .chunk_position();
+        for chunk_x in min_chunk.x..=max_chunk.x {
+            for chunk_z in min_chunk.y..=max_chunk.y {
+                let Some(entities) = self.block_entities.get(&Vector2::new(chunk_x, chunk_z))
+                else {
+                    continue;
+                };
+                for entity in entities.values() {
+                    let pos = entity.get_position();
+                    if pos.0.x.abs_diff(source_pos.0.x) > radius as u32
+                        || pos.0.y.abs_diff(source_pos.0.y) > radius as u32
+                        || pos.0.z.abs_diff(source_pos.0.z) > radius as u32
+                    {
+                        continue;
+                    }
+                    let Some(catalyst) = entity.as_any().downcast_ref::<SculkCatalystBlockEntity>()
+                    else {
+                        continue;
+                    };
+                    if catalyst.handle_entity_death(self, source_pos, charge, mob) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub async fn unload(self: &Arc<Self>) {
         let mut event =
             crate::plugin::api::events::world::world_load::WorldUnloadEvent::new(self.clone());
