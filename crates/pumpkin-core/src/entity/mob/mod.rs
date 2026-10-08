@@ -1008,6 +1008,13 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    /// Vanilla `AbstractSchoolingFish` implementors (cod); return `Some(self)` then.
+    fn as_schooling_fish(
+        &self,
+    ) -> Option<&dyn crate::entity::passive::abstract_schooling_fish::SchoolingFish> {
+        None
+    }
+
     fn as_iron_golem(&self) -> Option<&crate::entity::passive::iron_golem::IronGolemEntity> {
         None
     }

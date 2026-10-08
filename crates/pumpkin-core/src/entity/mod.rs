@@ -874,6 +874,8 @@ pub struct Entity {
     pub velocity: AtomicCell<Vector3<f64>>,
     /// Tracks a horizontal collision
     pub horizontal_collision: AtomicBool,
+    /// Tracks a vertical collision (vanilla `Entity.verticalCollision`).
+    pub vertical_collision: AtomicBool,
     /// Indicates whether the entity is on the ground (may not always be accurate).
     pub on_ground: AtomicBool,
     /// Indicates whether the entity is touching water
@@ -1026,6 +1028,7 @@ impl Entity {
             touching_lava: AtomicBool::new(false),
             lava_height: AtomicCell::new(0.0),
             horizontal_collision: AtomicBool::new(false),
+            vertical_collision: AtomicBool::new(false),
             pos: AtomicCell::new(position),
             last_pos: AtomicCell::new(position),
             movement: AtomicCell::new(Vector3::default()),
@@ -1405,6 +1408,7 @@ impl Entity {
         self.on_ground.store(false, Ordering::SeqCst);
         self.supporting_block_pos.store(None);
         self.horizontal_collision.store(false, Ordering::SeqCst);
+        self.vertical_collision.store(false, Ordering::SeqCst);
 
         let bounding_box = self.bounding_box.load();
 
@@ -1420,6 +1424,7 @@ impl Entity {
         let mut adjusted_movement = movement;
 
         // Y-Axis adjustment
+        let mut vertical_collision = false;
         if movement.get_axis(Axis::Y) != 0.0 {
             let mut max_time = 1.0;
             let mut positions = block_positions.into_iter();
@@ -1453,6 +1458,7 @@ impl Entity {
                 if max_time != 1.0 {
                     let changed_component = adjusted_movement.get_axis(Axis::Y) * max_time;
                     adjusted_movement.set_axis(Axis::Y, changed_component);
+                    vertical_collision = true;
                 }
 
                 self.on_ground
@@ -1490,6 +1496,9 @@ impl Entity {
 
         self.horizontal_collision
             .store(horizontal_collision, Ordering::SeqCst);
+
+        self.vertical_collision
+            .store(vertical_collision, Ordering::SeqCst);
 
         adjusted_movement
     }
@@ -2017,6 +2026,7 @@ impl Entity {
         if self.no_physics.load(Ordering::Relaxed) {
             self.move_pos(motion);
             self.horizontal_collision.store(false, Ordering::Relaxed);
+            self.vertical_collision.store(false, Ordering::Relaxed);
             self.on_ground.store(false, Ordering::Relaxed);
 
             return;

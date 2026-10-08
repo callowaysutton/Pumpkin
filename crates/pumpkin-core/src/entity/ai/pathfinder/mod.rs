@@ -1776,12 +1776,17 @@ impl PathNavigationTrait for WaterBoundPathNavigation {
         self.inner.tick_count += 1;
         let world_age = entity.entity.world.load().get_world_age() as u64;
 
-        if self.inner.has_delayed_recomputation {
+        // Vanilla `WaterBoundPathNavigation.canUpdatePath`: only path while in liquid.
+        let can_update_path = self.allow_breaching
+            || entity.entity.touching_water.load(Ordering::Relaxed)
+            || entity.entity.touching_lava.load(Ordering::Relaxed);
+
+        if can_update_path && self.inner.has_delayed_recomputation {
             self.recompute_path(entity);
         }
 
         if let Some(goal) = self.inner.current_goal.take() {
-            if self.inner.needs_new_path(&goal) {
+            if can_update_path && self.inner.needs_new_path(&goal) {
                 self.inner.path = self.inner.compute_path(entity, goal.destination, 1);
                 self.inner.ticks_on_current_node = 0;
                 self.inner.last_node_index = 0;
@@ -1816,12 +1821,21 @@ impl PathNavigationTrait for WaterBoundPathNavigation {
                 let dz = target_pos.z - current_pos.z;
                 let dist_sq = dx * dx + dy * dy + dz * dz;
 
-                if dist_sq < 0.5 * 0.5 {
+                // Follow the path only in liquid (vanilla `PathNavigation.tick`); while
+                // beached, only a node that is already passed can still be skipped.
+                let at_node_or_beached = (dist_sq < 0.5 * 0.5 && can_update_path)
+                    || (!can_update_path
+                        && current_pos.y > target_pos.y
+                        && !entity.entity.on_ground.load(Ordering::SeqCst)
+                        && current_pos.x.floor() == target_pos.x.floor()
+                        && current_pos.z.floor() == target_pos.z.floor());
+                if at_node_or_beached {
                     path.advance();
                 }
             }
 
             if !self.is_done()
+                && can_update_path
                 && let Some(path) = &self.inner.path
                 && let Some(next_block) = path.get_next_node_pos()
             {

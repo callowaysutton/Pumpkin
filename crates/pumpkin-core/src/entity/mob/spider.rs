@@ -130,7 +130,9 @@ pub fn finalize_spider_spawn(
         SpawnGroupData::SpiderEffects(effect)
     });
 
-    let SpawnGroupData::SpiderEffects(effect) = &group_data;
+    let SpawnGroupData::SpiderEffects(effect) = &group_data else {
+        return Some(group_data);
+    };
     if let Some(effect_type) = effect {
         mob.living_entity.add_effect(Effect {
             effect_type,

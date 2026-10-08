@@ -9,6 +9,7 @@ use rand::RngExt;
 use crate::entity::EntityBase;
 use crate::entity::attributes::{Modifier, ModifierOperation};
 use crate::entity::mob::MobEntity;
+use crate::entity::passive::abstract_schooling_fish::{SchoolSpawnGroupData, fish_schooling};
 use crate::world::World;
 
 const RANDOM_SPAWN_BONUS_ID: &str = "minecraft:random_spawn_bonus";
@@ -17,6 +18,9 @@ const RANDOM_SPAWN_BONUS_ID: &str = "minecraft:random_spawn_bonus";
 pub enum SpawnGroupData {
     /// The effect the first spider of a group rolled on hard difficulty.
     SpiderEffects(Option<&'static StatusEffect>),
+    /// The leader the rest of the school batch follows (vanilla
+    /// `AbstractSchoolingFish.SchoolSpawnGroupData`).
+    School(SchoolSpawnGroupData),
 }
 
 impl MobEntity {
@@ -70,9 +74,26 @@ pub fn finalize_spawn(
     world: &Arc<World>,
     group_data: Option<SpawnGroupData>,
 ) -> Option<SpawnGroupData> {
-    match entity.get_mob() {
+    let mob = entity.get_mob();
+    let group_data = match mob {
         Some(mob) => mob.finalize_spawn(world, group_data),
         None => group_data,
+    };
+
+    // Vanilla `AbstractSchoolingFish.finalizeSpawn` runs after the base hook: the first fish of
+    // a spawn group leads the school, the later ones follow it.
+    let Some(school) = fish_schooling(entity) else {
+        return group_data;
+    };
+    match group_data {
+        None => Some(SpawnGroupData::School(SchoolSpawnGroupData {
+            leader: entity.clone(),
+        })),
+        Some(SpawnGroupData::School(group)) => {
+            school.schooling().start_following(&group.leader);
+            Some(SpawnGroupData::School(group))
+        }
+        other => other,
     }
 }
 

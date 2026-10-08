@@ -1,3 +1,4 @@
+pub mod abstract_schooling_fish;
 pub mod allay;
 pub mod animal;
 pub mod armadillo;
