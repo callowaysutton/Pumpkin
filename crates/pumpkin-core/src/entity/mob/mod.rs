@@ -995,6 +995,18 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    /// Vanilla `AbstractFish.canRandomSwim`. Schooling fish that follow a leader do not
+    /// pick their own swimming destination.
+    fn can_random_swim(&self) -> bool {
+        true
+    }
+
+    fn as_schooling_fish(
+        &self,
+    ) -> Option<&dyn crate::entity::passive::schooling_fish::SchoolingFish> {
+        None
+    }
+
     fn as_patrolling_monster(&self) -> Option<&dyn patrol::PatrollingMonster> {
         None
     }
