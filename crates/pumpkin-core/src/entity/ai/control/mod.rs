@@ -5,6 +5,7 @@ use pumpkin_util::math::vector3::Vector3;
 pub mod body_rotation_control;
 pub mod flying_move_control;
 pub mod ghast_move_control;
+pub mod guardian_move_control;
 pub mod jump_control;
 pub mod look_control;
 pub mod move_control;

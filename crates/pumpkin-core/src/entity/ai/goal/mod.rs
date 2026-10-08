@@ -23,6 +23,7 @@ pub mod follow_owner;
 pub mod follow_parent;
 pub mod go_to_wanted_item;
 pub mod goal_selector;
+pub mod guardian_attack;
 pub mod interact;
 pub mod leap_at_target;
 pub mod look_around;
