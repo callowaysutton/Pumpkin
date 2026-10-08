@@ -268,6 +268,10 @@ impl Mob for TraderLlamaEntity {
         Some(self)
     }
 
+    fn as_trader_llama(&self) -> Option<&crate::entity::passive::trader_llama::TraderLlamaEntity> {
+        Some(self)
+    }
+
     fn as_animal(&self) -> Option<&dyn Animal> {
         Some(self)
     }

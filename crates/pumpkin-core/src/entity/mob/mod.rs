@@ -1063,6 +1063,16 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    fn as_wandering_trader(
+        &self,
+    ) -> Option<&crate::entity::passive::wandering_trader::WanderingTraderEntity> {
+        None
+    }
+
+    fn as_trader_llama(&self) -> Option<&crate::entity::passive::trader_llama::TraderLlamaEntity> {
+        None
+    }
+
     fn as_crossbow_attack_mob(&self) -> Option<&dyn crossbow_attack_mob::CrossbowAttackMob> {
         None
     }
