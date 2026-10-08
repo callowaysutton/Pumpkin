@@ -57,12 +57,24 @@ pub struct Biome {
     /// Environment attributes; 26.3 stores natural mob spawns here.
     #[serde(default)]
     attributes: BTreeMap<String, Value>,
+    /// Whether fire burns out faster in this biome (`gameplay/increased_fire_burnout`).
+    #[serde(skip)]
+    increased_fire_burnout: bool,
     /// Numeric registry ID assigned to this biome.
     #[serde(default)]
     pub id: u8,
 }
 
 impl Biome {
+    fn apply_environment_attributes(&mut self) {
+        self.increased_fire_burnout = self
+            .attributes
+            .get("minecraft:gameplay/increased_fire_burnout")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        self.apply_natural_mob_spawns();
+    }
+
     fn apply_natural_mob_spawns(&mut self) {
         let Some(attr) = self.attributes.get("minecraft:gameplay/natural_mob_spawns") else {
             return;
@@ -325,7 +337,7 @@ pub fn build() -> TokenStream {
             .into_owned();
         let content = fs::read_to_string(entry.path()).expect("Failed to read biome file");
         let mut biome: Biome = serde_json::from_str(&content).expect("Failed to parse biome JSON");
-        biome.apply_natural_mob_spawns();
+        biome.apply_environment_attributes();
         biome.id = i as u8;
         biomes.insert(stem, biome);
     }
@@ -385,6 +397,7 @@ pub fn build() -> TokenStream {
         let temperature_modifier = biome
             .temperature_modifier
             .unwrap_or(TemperatureModifier::None);
+        let increased_fire_burnout = biome.increased_fire_burnout;
 
         let monster: Vec<_> = biome
             .spawners
@@ -475,6 +488,7 @@ pub fn build() -> TokenStream {
                 features: &[#(#features),*],
                 carvers: &[#(#carvers),*],
                 creature_spawn_probability: #creature_spawn_probability,
+                increased_fire_burnout: #increased_fire_burnout,
                 spawners: #spawners,
                 spawn_costs: phf::phf_map! {
                     #(#spawn_costs),*
@@ -507,6 +521,7 @@ pub fn build() -> TokenStream {
             pub carvers: &'static [&'static crate::carver::CarverConfig],
             pub features: &'static [&'static [crate::placed_feature::PlacedFeature]],
             pub creature_spawn_probability: f32,
+            pub increased_fire_burnout: bool,
             pub spawners: SpawnGroups,
             pub spawn_costs: phf::Map<&'static str, SpawnCosts>,
         }
