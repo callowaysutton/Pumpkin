@@ -1,4 +1,5 @@
 mod chest;
+pub mod command_block;
 mod container;
 mod furnace;
 mod hopper;
@@ -30,6 +31,7 @@ use pumpkin_util::math::vector3::Vector3;
 
 use crate::entity::vehicle::vehicle::VehicleEntity;
 use chest::ChestMinecart;
+use command_block::CommandBlockMinecart;
 use container::MinecartInventory;
 use furnace::FurnaceMinecart;
 use hopper::HopperMinecart;
@@ -68,6 +70,7 @@ enum MinecartKind {
     Furnace(FurnaceMinecart),
     Hopper(HopperMinecart),
     Tnt(TntMinecart),
+    CommandBlock(Arc<CommandBlockMinecart>),
     Other,
 }
 
@@ -83,6 +86,9 @@ impl MinecartEntity {
                 MinecartKind::Hopper(HopperMinecart::new())
             }
             id if id == EntityType::TNT_MINECART.id => MinecartKind::Tnt(TntMinecart::new()),
+            id if id == EntityType::COMMAND_BLOCK_MINECART.id => {
+                MinecartKind::CommandBlock(Arc::new(CommandBlockMinecart::new()))
+            }
             _ => MinecartKind::Other,
         };
         Self {
@@ -105,8 +111,25 @@ impl MinecartEntity {
             MinecartKind::Furnace(_) => Some(&Item::FURNACE_MINECART),
             MinecartKind::Hopper(_) => Some(&Item::HOPPER_MINECART),
             MinecartKind::Tnt(_) => Some(&Item::TNT_MINECART),
+            MinecartKind::CommandBlock(_) => Some(&Item::MINECART),
             _ => None,
         }
+    }
+
+    /// Applies a command sent by the client through `ServerboundSetCommandMinecart`.
+    /// Returns `false` when this minecart is not a command block minecart.
+    #[must_use]
+    pub fn set_command(&self, command: &str, track_output: bool) -> bool {
+        let MinecartKind::CommandBlock(minecart) = &self.kind else {
+            return false;
+        };
+        *minecart
+            .command
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = command.to_string();
+        minecart.success_count.store(0, Ordering::Release);
+        minecart.track_output.store(track_output, Ordering::Release);
+        true
     }
 }
 
@@ -117,6 +140,7 @@ impl EntityBase for MinecartEntity {
             MinecartKind::Furnace(minecart) => minecart.write_nbt(nbt),
             MinecartKind::Hopper(minecart) => minecart.write_nbt(nbt),
             MinecartKind::Tnt(minecart) => minecart.write_nbt(nbt),
+            MinecartKind::CommandBlock(minecart) => minecart.write_nbt(nbt),
             MinecartKind::Rideable(_) | MinecartKind::Other => {}
         }
     }
@@ -127,6 +151,7 @@ impl EntityBase for MinecartEntity {
             MinecartKind::Furnace(minecart) => minecart.read_nbt(nbt),
             MinecartKind::Hopper(minecart) => minecart.read_nbt(nbt),
             MinecartKind::Tnt(minecart) => minecart.read_nbt(nbt),
+            MinecartKind::CommandBlock(minecart) => minecart.read_nbt(nbt),
             MinecartKind::Rideable(_) | MinecartKind::Other => {}
         }
     }
@@ -251,6 +276,9 @@ impl EntityBase for MinecartEntity {
                                 self.vehicle.set_damage(50.0);
                                 self.vehicle.send_wobble_metadata();
                             }
+                        }
+                        MinecartKind::CommandBlock(minecart) => {
+                            minecart.activate(&self.vehicle.entity);
                         }
                         _ => {}
                     }
@@ -771,7 +799,10 @@ impl EntityBase for MinecartEntity {
                 true
             }
             MinecartKind::Rideable(_) => RideableMinecart::interact(&self.vehicle.entity, player),
-            MinecartKind::Tnt(_) | MinecartKind::Other => false,
+            // TODO: open the command block minecart editor for game master
+            // players once the client screen is supported. Vanilla returns
+            // SUCCESS here and never lets the player ride the cart.
+            MinecartKind::Tnt(_) | MinecartKind::CommandBlock(_) | MinecartKind::Other => false,
         }
     }
 

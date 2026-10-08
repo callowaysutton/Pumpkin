@@ -10,6 +10,7 @@ use crate::block::entities::command_block::CommandBlockEntity;
 pub use crate::command::context::command_source::CommandSource;
 use crate::entity::EntityBase;
 use crate::entity::player::Player;
+use crate::entity::vehicle::minecart::command_block::CommandBlockMinecart;
 use crate::server::Server;
 use crate::world::World;
 use pumpkin_data::{
@@ -117,14 +118,34 @@ pub enum CommandSender {
     /// Contains a reference to the [Player] struct to access their
     /// location, permissions, and session.
     Player(Arc<Player>),
-    /// A Command Block or Command Block Minecart.
+    /// A Command Block (not a minecart).
     ///
     /// Contains the block entity responsible for the command and the
     /// world context it exists in for coordinate-relative execution (e.g., `~ ~ ~`).
     CommandBlock(Arc<CommandBlockEntity>, Arc<World>),
+    /// A Command Block Minecart.
+    ///
+    /// Minecarts move, so unlike a block command block the position and
+    /// rotation are snapshotted onto the entity state when the command runs.
+    CommandBlockMinecart(Arc<CommandBlockMinecart>, Arc<World>),
     /// Nothingness. Anything sent to this sender is void.
     /// Has the same permissions as that of `CommandBlock`.
     Dummy,
+}
+
+/// Prefixes `text` with a `HH:mm:ss` timestamp and stores it as the last
+/// command block output, matching vanilla `BaseCommandBlock`.
+fn update_command_block_output(last_output: &std::sync::Mutex<String>, text: TextComponent) {
+    let mut last_output = last_output
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = time::OffsetDateTime::now_utc();
+    let format = time::macros::format_description!("[hour]:[minute]:[second]");
+    let timestamp = now
+        .format(&format)
+        .unwrap_or_else(|_| "00:00:00".to_string());
+
+    *last_output = format!("[{}] {}", timestamp, text.get_text());
 }
 
 impl fmt::Display for CommandSender {
@@ -135,7 +156,7 @@ impl fmt::Display for CommandSender {
             match self {
                 Self::Console => "Server",
                 Self::Player(p) => &p.gameprofile.name,
-                Self::CommandBlock(..) => "@",
+                Self::CommandBlock(..) | Self::CommandBlockMinecart(..) => "@",
                 Self::Dummy => "",
             }
         )
@@ -149,27 +170,27 @@ impl CommandSender {
             Self::Console => println!("{}", text.to_pretty_console()),
             Self::Player(c) => c.send_system_message(&text),
             Self::CommandBlock(block_entity, _) => {
-                let mut last_output = block_entity
-                    .last_output
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                let now = time::OffsetDateTime::now_utc();
-                let format = time::macros::format_description!("[hour]:[minute]:[second]");
-                let timestamp = now
-                    .format(&format)
-                    .unwrap_or_else(|_| "00:00:00".to_string());
-
-                *last_output = format!("[{}] {}", timestamp, text.get_text());
+                update_command_block_output(&block_entity.last_output, text);
+            }
+            Self::CommandBlockMinecart(minecart, _) => {
+                update_command_block_output(&minecart.last_output, text);
             }
             Self::Dummy => {}
         }
     }
 
     pub fn set_success_count(&self, count: u32) {
-        if let Self::CommandBlock(c, _) = self {
-            c.success_count
-                .store(count, std::sync::atomic::Ordering::SeqCst);
+        match self {
+            Self::CommandBlock(c, _) => {
+                c.success_count
+                    .store(count, std::sync::atomic::Ordering::SeqCst);
+            }
+            Self::CommandBlockMinecart(minecart, _) => {
+                minecart
+                    .success_count
+                    .store(count, std::sync::atomic::Ordering::SeqCst);
+            }
+            _ => {}
         }
     }
 
@@ -196,7 +217,9 @@ impl CommandSender {
         match self {
             Self::Console => PermissionLvl::Four,
             Self::Player(p) => p.permission_lvl.load(),
-            Self::CommandBlock(..) | Self::Dummy => PermissionLvl::Two,
+            Self::CommandBlock(..) | Self::CommandBlockMinecart(..) | Self::Dummy => {
+                PermissionLvl::Two
+            }
         }
     }
 
@@ -205,7 +228,9 @@ impl CommandSender {
         match self {
             Self::Console => true,
             Self::Player(p) => p.permission_lvl.load().ge(&lvl),
-            Self::CommandBlock(..) | Self::Dummy => PermissionLvl::Two >= lvl,
+            Self::CommandBlock(..) | Self::CommandBlockMinecart(..) | Self::Dummy => {
+                PermissionLvl::Two >= lvl
+            }
         }
     }
 
@@ -214,7 +239,7 @@ impl CommandSender {
         match self {
             Self::Console => true, // Console always has all permissions
             Self::Player(p) => p.has_permission(server, node),
-            Self::CommandBlock(..) | Self::Dummy => {
+            Self::CommandBlock(..) | Self::CommandBlockMinecart(..) | Self::Dummy => {
                 let Some(p) = server.permission_manager.get_permission(node) else {
                     return false;
                 };
@@ -233,6 +258,7 @@ impl CommandSender {
             Self::Console | Self::Dummy => None,
             Self::Player(p) => Some(p.living_entity.entity.pos.load()),
             Self::CommandBlock(c, _) => Some(c.get_position().to_centered_f64()),
+            Self::CommandBlockMinecart(minecart, _) => Some(minecart.position.load()),
         }
     }
 
@@ -259,6 +285,10 @@ impl CommandSender {
                 let props = CommandBlockLikeProperties::from_state_id(state_id);
                 Some((0.0, command_block_y_rot(props.facing)))
             }
+            Self::CommandBlockMinecart(minecart, _) => {
+                let rotation = minecart.rotation.load();
+                Some((rotation.x, rotation.y))
+            }
         }
     }
 
@@ -269,7 +299,7 @@ impl CommandSender {
             // fall back to the first world instead.
             Self::Console | Self::Dummy => None,
             Self::Player(p) => Some(p.living_entity.entity.world.load_full()),
-            Self::CommandBlock(_, w) => Some(w.clone()),
+            Self::CommandBlock(_, w) | Self::CommandBlockMinecart(_, w) => Some(w.clone()),
         }
     }
 
@@ -288,7 +318,10 @@ impl CommandSender {
     #[must_use]
     pub fn get_locale(&self) -> Locale {
         match self {
-            Self::CommandBlock(..) | Self::Console | Self::Dummy => Locale::EnUs, // Default locale for console
+            Self::CommandBlock(..)
+            | Self::CommandBlockMinecart(..)
+            | Self::Console
+            | Self::Dummy => Locale::EnUs, // Default locale for console
             Self::Player(player) => {
                 Locale::from_str(&player.config.load().locale).unwrap_or(Locale::EnUs)
             }
@@ -298,7 +331,7 @@ impl CommandSender {
     #[must_use]
     pub fn should_receive_feedback(&self) -> bool {
         match self {
-            Self::CommandBlock(_, world) => {
+            Self::CommandBlock(_, world) | Self::CommandBlockMinecart(_, world) => {
                 world.level_info.load().game_rules.send_command_feedback
             }
             Self::Player(player) => {
@@ -317,7 +350,9 @@ impl CommandSender {
     #[must_use]
     pub fn should_broadcast_console_to_ops(&self) -> bool {
         match self {
-            Self::CommandBlock(_, world) => world.level_info.load().game_rules.command_block_output,
+            Self::CommandBlock(_, world) | Self::CommandBlockMinecart(_, world) => {
+                world.level_info.load().game_rules.command_block_output
+            }
             Self::Player(..) => true,
             Self::Console => BROADCAST_CONSOLE_TO_OPS.load(std::sync::atomic::Ordering::Relaxed),
             Self::Dummy => false,
@@ -328,7 +363,10 @@ impl CommandSender {
     pub const fn should_track_output(&self) -> bool {
         match self {
             Self::Dummy => false,
-            Self::Player(..) | Self::Console | Self::CommandBlock(..) => true,
+            Self::Player(..)
+            | Self::Console
+            | Self::CommandBlock(..)
+            | Self::CommandBlockMinecart(..) => true,
         }
     }
 
@@ -381,6 +419,24 @@ impl CommandSender {
                     None,
                     pos.to_centered_f64(),
                     Vector2::new(0.0, horizontal_direction),
+                    name.clone().get_text(),
+                    name,
+                    server.clone(),
+                )
+            }
+            Self::CommandBlockMinecart(minecart, world) => {
+                let pos = minecart.position.load();
+                let rotation = minecart.rotation.load();
+
+                // TODO: when command blocks get custom names, add a check for it
+                let name = TextComponent::text("@");
+
+                CommandSource::new(
+                    Self::CommandBlockMinecart(minecart, world.clone()),
+                    world,
+                    None,
+                    pos,
+                    Vector2::new(rotation.x, rotation.y),
                     name.clone().get_text(),
                     name,
                     server.clone(),

@@ -290,7 +290,10 @@ impl pumpkin::plugin::command::HostCommandSender for PluginHostState {
             pumpkin_core::command::CommandSender::CommandBlock(block_entity, world) => Ok(
                 CommandSenderType::CommandBlock((self.add(block_entity)?, self.add(world)?)),
             ),
-            pumpkin_core::command::CommandSender::Dummy => Ok(CommandSenderType::Dummy),
+            // Command block minecarts have no dedicated plugin sender type
+            // in the WIT bindings yet, so plugins observe them as dummy.
+            pumpkin_core::command::CommandSender::CommandBlockMinecart(..)
+            | pumpkin_core::command::CommandSender::Dummy => Ok(CommandSenderType::Dummy),
         }
     }
 
