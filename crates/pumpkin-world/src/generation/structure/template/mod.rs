@@ -41,8 +41,8 @@ use crate::ProtoChunk;
 
 pub use block_state_resolver::BlockStateResolver;
 pub use cache::{
-    TemplateCache, all_embedded_datapack_names, all_pool_names, all_structure_names,
-    all_template_names, get_template, global_cache,
+    TemplateCache, TemplateSaveError, all_embedded_datapack_names, all_pool_names,
+    all_structure_names, all_template_names, get_template, global_cache,
 };
 pub use processor::{
     StructureProcessor, clear_dynamic_processors, load_processor_list,
