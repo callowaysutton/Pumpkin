@@ -110,4 +110,12 @@ impl MoveControlTrait for FlyingMoveControl {
     fn has_wanted(&self) -> bool {
         self.operation == Operation::MoveTo
     }
+
+    fn wanted_position(&self) -> Option<Vector3<f64>> {
+        (self.operation == Operation::MoveTo).then_some(Vector3::new(
+            self.wanted_x,
+            self.wanted_y,
+            self.wanted_z,
+        ))
+    }
 }
