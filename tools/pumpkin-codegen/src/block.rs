@@ -609,9 +609,12 @@ pub enum PistonBehavior {
     #[serde(alias = "POPPED")]
     Destroy,
     /// The block prevents piston movement.
-    Block,
-    /// The piston ignores the block entirely.
+    /// Vanilla 26.3 calls this `IMMOVEABLE`.
     #[serde(alias = "IMMOVEABLE")]
+    Block,
+    /// Pistons and entities ignore the block. Vanilla 26.3 calls this
+    /// `IGNORE_ENTITY`.
+    #[serde(alias = "IGNORE_ENTITY")]
     Ignore,
     /// The block can only be pushed, not pulled.
     #[serde(alias = "PUSH")]
