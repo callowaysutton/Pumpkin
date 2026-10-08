@@ -1,17 +1,22 @@
 use core::f32;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::entity::item::ItemEntity;
 use crate::entity::player::Player;
 use crate::entity::{Entity, EntityBase, living::LivingEntity};
-use pumpkin_data::BlockDirection;
-use pumpkin_data::damage::DamageType;
+use crate::server::Server;
+use pumpkin_data::data_component_impl::CustomNameImpl;
+use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::painting_variant::PaintingVariant;
 use pumpkin_data::sound::{Sound, SoundCategory};
+use pumpkin_data::{Block, BlockDirection, BlockState, damage::DamageType};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::Metadata;
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_util::version::JavaMinecraftVersion;
@@ -45,12 +50,31 @@ const fn facing_to_horizontal(direction: BlockDirection) -> u8 {
     }
 }
 
+/// Vanilla `BlockAttachedEntity.CHECK_INTERVAL`: hanging entities check their
+/// attachment only every hundred ticks; block changes never notify them directly.
+const CHECK_INTERVAL: u32 = 100;
+
+/// Vanilla tracks the facing in the 3D data value index and defaults to south.
+/// Vertical indices would be rejected by `HangingEntity.setDirection`, so an
+/// unset `/summon` painting (data 0, down) also reads as south.
+const fn facing_from_data(index: i32) -> BlockDirection {
+    match BlockDirection::from_index(index as u8) {
+        Some(direction) if direction.is_horizontal() => direction,
+        _ => BlockDirection::South,
+    }
+}
+
 pub struct PaintingEntity {
     pub entity: Entity,
     variant_id: AtomicU32,
+    /// Vanilla `BlockAttachedEntity.ticksSinceLastCheck`.
+    ticks_since_last_check: AtomicU32,
 }
 
 impl PaintingEntity {
+    /// Vanilla `Painting.DEPTH`: the thickness of the painting sliver.
+    pub const DEPTH: f64 = 0.0625;
+
     #[must_use]
     pub const fn new(entity: Entity) -> Self {
         Self::new_with_variant(entity, PaintingVariant::Alban)
@@ -61,6 +85,7 @@ impl PaintingEntity {
         Self {
             entity,
             variant_id: AtomicU32::new(variant.id()),
+            ticks_since_last_check: AtomicU32::new(0),
         }
     }
 
@@ -187,9 +212,20 @@ impl PaintingEntity {
         fitting_variants.choose(&mut rng).copied()
     }
 
-    fn drop_and_remove(&self, caused_by: Option<&dyn EntityBase>) {
+    /// Vanilla keeps the facing in the 3D data value index; see `facing_from_data`.
+    fn facing(&self) -> BlockDirection {
+        facing_from_data(self.entity.data.load(Ordering::Relaxed))
+    }
+
+    /// Vanilla `Painting.dropItem`: gated by the entity drops game rule, plays the
+    /// break sound and, unless a creative player caused the break, spawns the
+    /// painting item slightly in front of the painting.
+    fn drop_item(&self, caused_by: Option<&dyn EntityBase>) {
         let entity = &self.entity;
         let world = entity.world.load();
+        if !world.level_info.load().game_rules.entity_drops {
+            return;
+        }
         world.play_sound(
             Sound::EntityPaintingBreak,
             SoundCategory::Blocks,
@@ -201,20 +237,132 @@ impl PaintingEntity {
                 .downcast_ref::<Player>()
                 .is_some_and(Player::is_creative)
         });
-
-        if !is_creative {
-            world.drop_stack(&entity.block_pos.load(), ItemStack::new(1, &Item::PAINTING));
+        if is_creative {
+            return;
         }
 
-        entity.remove();
+        // A custom-named painting drops a custom-named item.
+        let mut stack = ItemStack::new(1, &Item::PAINTING);
+        if let Some(name) = entity.custom_name.load().as_ref() {
+            stack.set_data_component(CustomNameImpl { name: name.clone() });
+        }
+
+        // Vanilla `HangingEntity.spawnAtLocation`: the item spawns 0.15 blocks in
+        // front of the painting along its facing.
+        let pos = entity.pos.load();
+        let step = self.facing().to_offset();
+        let spawn_pos = Vector3::new(
+            pos.x + f64::from(step.x) * 0.15,
+            pos.y,
+            pos.z + f64::from(step.z) * 0.15,
+        );
+        world.spawn_entity(Arc::new(ItemEntity::new(
+            Entity::new(world.clone(), spawn_pos, &EntityType::ITEM),
+            stack,
+        )));
+    }
+
+    /// Vanilla `Painting.calculateBoundingBox`: the painting box is centred on the
+    /// painting's position, thin as [`Self::DEPTH`] along the facing and as wide
+    /// as the variant elsewhere.
+    #[must_use]
+    pub fn calculate_bounding_box(
+        center: Vector3<f64>,
+        facing: BlockDirection,
+        variant: PaintingVariant,
+    ) -> BoundingBox {
+        let width = f64::from(variant.width());
+        let height = f64::from(variant.height());
+        let (x_size, z_size) = if facing.to_offset().x != 0 {
+            (Self::DEPTH, width)
+        } else {
+            (width, Self::DEPTH)
+        };
+        let (x_half, y_half, z_half) = (x_size / 2.0, height / 2.0, z_size / 2.0);
+        BoundingBox {
+            min: Vector3::new(center.x - x_half, center.y - y_half, center.z - z_half),
+            max: Vector3::new(center.x + x_half, center.y + y_half, center.z + z_half),
+        }
+    }
+
+    /// Vanilla `HangingEntity.isSupportingBlock`: solid blocks and diodes support
+    /// hanging entities.
+    fn is_supporting_block(state: &BlockState) -> bool {
+        let block = Block::from_state_id(state.id);
+        state.is_solid() || block == &Block::REPEATER || block == &Block::COMPARATOR
+    }
+
+    /// Vanilla `HangingEntity.survives`: the pop box must be free of block
+    /// collisions, every wall block in the support box must provide support, and no
+    /// other hanging entity of the same type or facing may sit in the pop box.
+    fn survives(&self) -> bool {
+        let entity = &self.entity;
+        let world = entity.world.load();
+        let facing = self.facing();
+        let pop_box = Self::calculate_bounding_box(entity.pos.load(), facing, self.variant());
+
+        // Vanilla `HangingEntity.hasLevelCollision(getPopBox())`: a solid front
+        // block collides with the painting box and pops it.
+        if !world.is_space_empty(pop_box) {
+            return false;
+        }
+
+        // Vanilla `HangingEntity.calculateSupportBox`: the pop box pushed half a
+        // block behind the painting, deflated so face contact with neighbouring
+        // blocks never counts as support.
+        let step = facing.to_offset();
+        let shifted = pop_box.shift(Vector3::new(
+            f64::from(step.x) * -0.5,
+            f64::from(step.y) * -0.5,
+            f64::from(step.z) * -0.5,
+        ));
+        let deflate = 1.0E-7;
+        let support_box = BoundingBox {
+            min: Vector3::new(
+                shifted.min.x + deflate,
+                shifted.min.y + deflate,
+                shifted.min.z + deflate,
+            ),
+            max: Vector3::new(
+                shifted.max.x - deflate,
+                shifted.max.y - deflate,
+                shifted.max.z - deflate,
+            ),
+        };
+        for pos in BlockPos::iterate(support_box.min_block_pos(), support_box.max_block_pos()) {
+            if !Self::is_supporting_block(world.get_block_state(&pos)) {
+                return false;
+            }
+        }
+
+        // Vanilla `HangingEntity.canCoexist`: an overlapping hanging entity blocks
+        // survival when it is of the same type or faces the same way.
+        let others = world.get_entities_at_box(&pop_box);
+        for other in &others {
+            let other_entity = other.get_entity();
+            if other_entity.entity_id == entity.entity_id {
+                continue;
+            }
+            let id = other_entity.entity_type.id;
+            let is_hanging = id == EntityType::PAINTING.id
+                || id == EntityType::ITEM_FRAME.id
+                || id == EntityType::GLOW_ITEM_FRAME.id;
+            if !is_hanging {
+                continue;
+            }
+            let same_type = id == entity.entity_type.id;
+            let same_facing = facing_from_data(other_entity.data.load(Ordering::Relaxed)) == facing;
+            if other_entity.bounding_box.load().intersects(&pop_box) && (same_type || same_facing) {
+                return false;
+            }
+        }
+        true
     }
 }
 
 impl EntityBase for PaintingEntity {
     fn write_custom_nbt(&self, nbt: &mut NbtCompound) {
-        let index = self.entity.data.load(Ordering::Relaxed) as u8;
-        let direction = BlockDirection::from_index(index).unwrap_or(BlockDirection::South);
-        nbt.put_byte("facing", facing_to_horizontal(direction) as i8);
+        nbt.put_byte("facing", facing_to_horizontal(self.facing()) as i8);
         nbt.put_string("variant", self.variant().asset_id().to_string());
     }
 
@@ -244,6 +392,34 @@ impl EntityBase for PaintingEntity {
         self.sync_variant();
     }
 
+    /// Vanilla `BlockAttachedEntity.tick`: paintings discard and drop when they
+    /// no longer survive, checked every `CHECK_INTERVAL` ticks. The base entity
+    /// tick is skipped, as it is for block-attached entities in vanilla.
+    fn tick(&self, caller: &dyn EntityBase, _server: &Server) {
+        // Vanilla `BlockAttachedEntity.checkBelowWorld`.
+        self.entity.check_out_of_world(caller);
+        if !self.entity.is_alive() {
+            return;
+        }
+        if self.ticks_since_last_check.fetch_add(1, Ordering::Relaxed) + 1 < CHECK_INTERVAL {
+            return;
+        }
+        self.ticks_since_last_check.store(0, Ordering::Relaxed);
+        if !self.survives() {
+            self.entity.remove();
+            self.drop_item(None);
+        }
+    }
+
+    /// Vanilla `BlockAttachedEntity.thunderHit`: block-attached entities ignore
+    /// lightning.
+    fn on_lightning_strike(
+        &self,
+        _caller: &dyn EntityBase,
+        _lightning: &crate::entity::lightning::LightningBoltEntity,
+    ) {
+    }
+
     fn java_spawn_metadata(&self, version: JavaMinecraftVersion) -> Option<Box<[u8]>> {
         let mut metadata = Vec::new();
         Metadata::new(
@@ -264,14 +440,42 @@ impl EntityBase for PaintingEntity {
 
     fn damage_with_context(
         &self,
-        caller: &dyn EntityBase,
+        _caller: &dyn EntityBase,
         _amount: f32,
-        _damage_type: DamageType,
+        damage_type: DamageType,
         _position: Option<Vector3<f64>>,
-        _source: Option<&dyn EntityBase>,
-        _cause: Option<&dyn EntityBase>,
+        source: Option<&dyn EntityBase>,
+        cause: Option<&dyn EntityBase>,
     ) -> bool {
-        self.drop_and_remove(Some(caller));
+        let entity = &self.entity;
+        // Vanilla `BlockAttachedEntity.hurtServer`: invulnerable entities (or the
+        // `bypasses_invulnerability` tag) resolve before anything else. The
+        // attacker splits into `source` and `cause` depending on the damage path
+        // (player attacks pass both, arrows only pass the owner as `source`).
+        let attacker = cause.or(source);
+        if entity.is_invulnerable_to(&damage_type, attacker) {
+            return false;
+        }
+        // Vanilla: mobs can only pop block-attached entities when mob griefing is
+        // enabled.
+        if !entity
+            .world
+            .load()
+            .level_info
+            .load()
+            .game_rules
+            .mob_griefing
+            && attacker.is_some_and(|cause| cause.get_mob().is_some())
+        {
+            return false;
+        }
+        if !entity.is_alive() {
+            return true;
+        }
+        // Vanilla order: the entity dies first, then `dropItem` plays the sound
+        // and spawns the item.
+        entity.remove();
+        self.drop_item(attacker);
         true
     }
 
@@ -320,6 +524,67 @@ mod tests {
     fn out_of_range_values_wrap_into_horizontal_directions() {
         assert!(facing_from_horizontal(4).is_horizontal());
         assert!(facing_from_horizontal(255).is_horizontal());
+    }
+
+    #[test]
+    fn unset_or_vertical_data_defaults_to_south() {
+        // An unset tracking field (`/summon`) reads 0, which would be down; vanilla
+        // `DEFAULT_DIRECTION` is south and vertical facings are rejected.
+        assert_eq!(facing_from_data(0), BlockDirection::South);
+        assert_eq!(facing_from_data(1), BlockDirection::South);
+        assert_eq!(facing_from_data(2), BlockDirection::North);
+        assert_eq!(facing_from_data(3), BlockDirection::South);
+        assert_eq!(facing_from_data(4), BlockDirection::West);
+        assert_eq!(facing_from_data(5), BlockDirection::East);
+    }
+
+    #[test]
+    fn calculate_bounding_box_sized_by_variant_and_facing() {
+        // Vanilla `Painting.calculateBoundingBox` is `AABB.ofSize` centred on the
+        // painting's position: `PAINTING_DEPTH` thin along the facing and matching
+        // the variant elsewhere. A 1x1 painting facing north off the wall block at
+        // (10, 64, 20) has its box inside the front block, touching the wall face
+        // at z = 20.
+        let center = Vector3::new(10.5, 64.5, 19.96875);
+        let north = PaintingEntity::calculate_bounding_box(
+            center,
+            BlockDirection::North,
+            PaintingVariant::Kebab,
+        );
+        assert_eq!(north.min.x, 10.0);
+        assert_eq!(north.max.x, 11.0);
+        assert_eq!(north.min.y, 64.0);
+        assert_eq!(north.max.y, 65.0);
+        assert_eq!(north.min.z, 19.9375);
+        assert_eq!(north.max.z, 20.0);
+
+        let west = PaintingEntity::calculate_bounding_box(
+            center,
+            BlockDirection::West,
+            PaintingVariant::Kebab,
+        );
+        assert_eq!(west.min.x, 10.46875);
+        assert_eq!(west.max.x, 10.53125);
+        assert_eq!(west.min.z, 19.46875);
+        assert_eq!(west.max.z, 20.46875);
+
+        // Any 2x2 variant spans a whole extra block along both width and height.
+        let square = PaintingVariant::all()
+            .iter()
+            .find(|variant| variant.width() == 2 && variant.height() == 2)
+            .copied()
+            .unwrap_or(PaintingVariant::Alban);
+        let south = PaintingEntity::calculate_bounding_box(
+            Vector3::new(10.5, 64.5, 21.03125),
+            BlockDirection::South,
+            square,
+        );
+        assert_eq!(south.min.x, 9.5);
+        assert_eq!(south.max.x, 11.5);
+        assert_eq!(south.min.y, 63.5);
+        assert_eq!(south.max.y, 65.5);
+        assert_eq!(south.min.z, 21.0);
+        assert_eq!(south.max.z, 21.0625);
     }
 
     #[test]
