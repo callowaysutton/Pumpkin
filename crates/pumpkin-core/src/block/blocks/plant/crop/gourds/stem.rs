@@ -92,7 +92,9 @@ impl BlockBehaviour for StemBlock {
     }
 
     fn random_tick(&self, args: RandomTickArgs<'_>) {
-        // TODO add light level check
+        if args.world.get_raw_brightness(args.position, 0) < 9 {
+            return;
+        }
         let f: f32 = get_available_moisture(args.world, args.position, args.block);
         if rand::rng().random_range(0..=(25.0 / f).floor() as i32) == 0 {
             let (block, state) = args.world.get_block_and_state_id(args.position);
@@ -112,8 +114,7 @@ impl BlockBehaviour for StemBlock {
                 let plant_block_state = args.world.get_block_state(&plant_block_pos);
                 let under_block: &Block = args.world.get_block(&plant_block_pos.down());
                 if plant_block_state.is_air()
-                    && (under_block == &Block::FARMLAND
-                        || under_block.has_tag(&tag::Block::MINECRAFT_DIRT))
+                    && under_block.has_tag(&tag::Block::MINECRAFT_SUPPORTS_STEM_FRUIT)
                 {
                     let attached_stem = Self::get_attached_stem(dir, block);
                     let gourd = Self::get_gourd(block);
@@ -135,12 +136,10 @@ impl BlockBehaviour for StemBlock {
 
 impl PlantBlockBase for StemBlock {
     fn can_plant_on_top(&self, block_accessor: &dyn BlockAccessor, pos: &BlockPos) -> bool {
-        let block = block_accessor.get_block(pos);
-        if block == &Block::PUMPKIN_STEM {
-            block.has_tag(&tag::Block::MINECRAFT_SUPPORTS_PUMPKIN_STEM)
-        } else {
-            block.has_tag(&tag::Block::MINECRAFT_SUPPORTS_MELON_STEM)
-        }
+        // Both vanilla per-stem support tags resolve to `#minecraft:supports_stem_crops`.
+        block_accessor
+            .get_block(pos)
+            .has_tag(&tag::Block::MINECRAFT_SUPPORTS_STEM_CROPS)
     }
 }
 
