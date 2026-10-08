@@ -8,13 +8,14 @@ use crate::block::blocks::plant::big_dripleaf_stem::{
 use crate::block::blocks::redstone::block_receives_redstone_power;
 use crate::block::{
     BlockBehaviour, BrokenArgs, CanPlaceAtArgs, GetStateForNeighborUpdateArgs, OnEntityStepArgs,
-    OnNeighborUpdateArgs, OnPlaceArgs, OnScheduledTickArgs, PlacedArgs,
+    OnNeighborUpdateArgs, OnPlaceArgs, OnProjectileHitArgs, OnScheduledTickArgs, PlacedArgs,
 };
 use crate::entity::EntityBase;
 use crate::entity::ai::pathfinder::node::Coordinate;
 use crate::world::World;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::{BigDripleafLikeProperties, HorizontalFacing, Tilt};
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, tag};
@@ -49,7 +50,9 @@ impl BlockBehaviour for BigDripleafBlock {
         let state = args.world.get_block_state(args.position);
         let props = BigDripleafLikeProperties::from_state_id(state.id);
 
-        if props.tilt == Tilt::Unstable {
+        if block_receives_redstone_power(args.world, args.position) {
+            reset_tilt(state.id, args.world, args.position);
+        } else if props.tilt == Tilt::Unstable {
             set_tilt_and_schedule_tick(
                 state.id,
                 args.world,
@@ -69,7 +72,15 @@ impl BlockBehaviour for BigDripleafBlock {
             reset_tilt(state.id, args.world, args.position);
         }
     }
-    //TODO: onProjectileHit
+    fn on_projectile_hit(&self, args: OnProjectileHitArgs<'_>) {
+        set_tilt_and_schedule_tick(
+            args.state.id,
+            args.world,
+            args.position,
+            Tilt::Full,
+            Some(Sound::BlockBigDripleafTiltDown),
+        );
+    }
     fn can_place_at(&self, args: CanPlaceAtArgs<'_>) -> bool {
         <Self as PlantBlockBase>::can_place_at(self, args.block_accessor, args.position)
     }
@@ -174,12 +185,17 @@ fn reset_tilt(state_id: BlockStateId, world: &Arc<World>, pos: &BlockPos) {
 
 fn set_tilt(state_id: BlockStateId, world: &Arc<World>, pos: &BlockPos, new_tilt: Tilt) {
     let mut props = BigDripleafLikeProperties::from_state_id(state_id);
+    let previous_tilt = props.tilt;
     props.tilt = new_tilt;
     world.set_block_state(
         pos,
         props.to_state_id(&Block::BIG_DRIPLEAF),
         BlockFlags::NOTIFY_ALL,
     );
+    // mirrors vanilla `Tilt#causesVibration`: every tilt except UNSTABLE vibrates.
+    if new_tilt != Tilt::Unstable && new_tilt != previous_tilt {
+        world.emit_game_event(GameEvent::BlockChange.name(), pos.to_centered_f64());
+    }
 }
 
 fn play_tilt_sound(world: &Arc<World>, pos: &BlockPos, tilt_sound: Sound) {
