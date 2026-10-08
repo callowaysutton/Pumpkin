@@ -7,6 +7,7 @@ use pumpkin_data::{
     damage::DamageType,
     data_component_impl::{EquipmentSlot, EquipmentType},
     entity::EntityStatus,
+    game_event::GameEvent,
     item::Item,
     particle::Particle,
     sound::{Sound, SoundCategory},
@@ -211,6 +212,23 @@ impl ArmorStandEntity {
         // TODO: Implement equipment slots and make them drop all of their stored items.
     }
 
+    /// Vanilla `ArmorStand.causeDamage`: chips health off directly instead of going
+    /// through the damage pipeline, breaking the stand at half a health or less.
+    fn cause_damage(&self, dmg: f32) {
+        let entity = self.get_entity();
+        let health = self.living_entity.health.load() - dmg;
+        if health <= 0.5 {
+            Self::on_break(entity);
+            entity.remove();
+        } else {
+            self.living_entity.set_health(health);
+            entity
+                .world
+                .load()
+                .emit_game_event(GameEvent::EntityDamage.name(), entity.pos.load());
+        }
+    }
+
     /// Spawns break particles at the armor stand's position.
     // TODO: use oak plank block particles like vanilla (requires block state data in particle system)
     fn spawn_break_particles(entity: &Entity) {
@@ -350,8 +368,20 @@ impl EntityBase for ArmorStandEntity {
             return false;
         }
 
-        // TODO: IGNITES_ARMOR_STANDS (in_fire, campfire) - set on fire
-        // TODO: BURNS_ARMOR_STANDS (on_fire) - reduce health
+        if damage_type.has_tag(&tag::DamageType::MINECRAFT_IGNITES_ARMOR_STANDS) {
+            if entity.is_on_fire() {
+                self.cause_damage(0.15);
+            } else {
+                self.set_on_fire_for(5.0);
+            }
+
+            return false;
+        } else if damage_type.has_tag(&tag::DamageType::MINECRAFT_BURNS_ARMOR_STANDS)
+            && self.living_entity.health.load() > 0.5
+        {
+            self.cause_damage(4.0);
+            return false;
+        }
 
         let can_break = damage_type.has_tag(&tag::DamageType::MINECRAFT_CAN_BREAK_ARMOR_STAND);
         let always_kills =
