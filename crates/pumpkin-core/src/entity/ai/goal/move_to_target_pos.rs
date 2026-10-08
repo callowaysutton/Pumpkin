@@ -107,12 +107,17 @@ impl<M: MoveToTargetPos> MoveToTargetPosGoal<M> {
 
     #[must_use]
     pub fn get_target_pos(&self) -> BlockPos {
-        self.target_pos.up()
+        self.move_to_target_pos.get().map_or_else(
+            || self.target_pos.up(),
+            |target| target.get_move_to_target(&self.target_pos),
+        )
     }
 
     #[must_use]
-    pub const fn should_reset_path(&self) -> bool {
-        self.trying_time % 40 == 0
+    pub fn should_reset_path(&self) -> bool {
+        self.move_to_target_pos
+            .get()
+            .is_none_or(|target| target.should_recalculate_path(self.trying_time))
     }
 
     #[must_use]
@@ -147,10 +152,47 @@ pub trait MoveToTargetPos: Send + Sync {
     fn get_desired_distance_to_target(&self) -> f64 {
         1.0
     }
+
+    /// Vanilla `MoveToBlockGoal.getMoveToTarget()`. Defaults to the block above the
+    /// target, matching the base class.
+    fn get_move_to_target(&self, block_pos: &BlockPos) -> BlockPos {
+        block_pos.up()
+    }
+
+    /// Vanilla `MoveToBlockGoal.shouldRecalculatePath()`. Defaults to every 40 ticks.
+    fn should_recalculate_path(&self, try_ticks: i32) -> bool {
+        try_ticks % 40 == 0
+    }
+
+    /// Extra condition on top of the base `canStart`, mirroring overrides that gate on
+    /// the mob's state (e.g. not being in lava).
+    fn can_use(&self, _mob: &dyn Mob) -> bool {
+        true
+    }
+
+    /// Extra condition on top of the base `canContinueToUse`, mirroring overrides that
+    /// gate on the mob's state.
+    fn can_continue_to_use(&self, _mob: &dyn Mob) -> bool {
+        true
+    }
+
+    /// Whether the base `canContinueToUse` give-up bounds (`tryTicks` / `maxStayTicks`)
+    /// still apply. Overrides that replace `canContinueToUse` entirely (without calling
+    /// super) return `false`.
+    fn continue_respects_try_ticks(&self) -> bool {
+        true
+    }
 }
 
 impl<M: MoveToTargetPos> Goal for MoveToTargetPosGoal<M> {
     fn can_start(&mut self, mob: &dyn Mob) -> bool {
+        if !self
+            .move_to_target_pos
+            .get()
+            .is_none_or(|target| target.can_use(mob))
+        {
+            return false;
+        }
         if self.cooldown > 0 {
             self.cooldown -= 1;
             return false;
@@ -166,10 +208,15 @@ impl<M: MoveToTargetPos> Goal for MoveToTargetPosGoal<M> {
             .get()
             .is_some_and(|move_to_target_pos| {
                 move_to_target_pos.is_target_pos(world, self.target_pos)
+                    && move_to_target_pos.can_continue_to_use(mob)
             });
-        self.trying_time >= -self.safe_waiting_time
-            && self.trying_time <= GIVE_UP_TICKS
-            && can_target
+        if !can_target {
+            return false;
+        }
+        self.move_to_target_pos
+            .get()
+            .is_some_and(|target| !target.continue_respects_try_ticks())
+            || (self.trying_time >= -self.safe_waiting_time && self.trying_time <= GIVE_UP_TICKS)
     }
 
     fn start(&mut self, mob: &dyn Mob) {
