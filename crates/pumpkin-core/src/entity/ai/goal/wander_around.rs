@@ -3,6 +3,8 @@ use crate::entity::ai::util::default_random_pos;
 use crate::entity::{ai::pathfinder::NavigatorGoal, mob::Mob};
 use pumpkin_util::math::vector3::Vector3;
 use rand::RngExt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_INTERVAL: i32 = 120;
 
@@ -12,6 +14,9 @@ pub struct WanderAroundGoal {
     target: Option<Vector3<f64>>,
     interval: i32,
     force_trigger: bool,
+    /// Optional handle other goals can trip to force a stroll, vanilla `trigger()` on a
+    /// goal the mob holds by reference.
+    shared_trigger: Option<Arc<AtomicBool>>,
 }
 
 impl WanderAroundGoal {
@@ -28,12 +33,21 @@ impl WanderAroundGoal {
             target: None,
             interval,
             force_trigger: false,
+            shared_trigger: None,
         }
     }
 
     /// Run once on the next check, ignoring the interval.
     pub const fn trigger(&mut self) {
         self.force_trigger = true;
+    }
+
+    /// Wires an externally owned flag that, when set, makes the next `can_start`
+    /// succeed ignoring the interval. Lets a goal that cannot hold this one by
+    /// reference (it lives boxed in the selector) request a stroll, as
+    /// `GuardianAttackGoal` does.
+    pub fn set_shared_trigger(&mut self, flag: Arc<AtomicBool>) {
+        self.shared_trigger = Some(flag);
     }
 
     pub const fn set_interval(&mut self, interval: i32) {
@@ -52,7 +66,12 @@ impl Goal for WanderAroundGoal {
             return false;
         }
 
-        if !self.force_trigger {
+        let shared_trigger = self
+            .shared_trigger
+            .as_ref()
+            .is_some_and(|flag| flag.swap(false, Ordering::Relaxed));
+
+        if !self.force_trigger && !shared_trigger {
             // TODO: also bail out on a long no-action time, which needs the despawn bookkeeping.
             if mob
                 .get_random()
