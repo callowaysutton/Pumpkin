@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 /// POI type identifier for nether portals
 pub const POI_TYPE_NETHER_PORTAL: &str = "minecraft:nether_portal";
 
+/// POI type identifier for lodestones
+pub const POI_TYPE_LODESTONE: &str = "minecraft:lodestone";
+
 /// MCA format constants
 const SECTOR_SIZE: usize = 4096;
 const REGION_SIZE: usize = 32;
@@ -489,6 +492,18 @@ impl PoiStorage {
         region.remove(pos)
     }
 
+    /// Mirrors vanilla `PoiManager#existsAtPosition`: true when a point of
+    /// interest of the given type is registered at exactly this position.
+    #[must_use]
+    pub fn exists_at(&mut self, pos: &BlockPos, poi_type: &str) -> bool {
+        let (rx, rz) = Self::region_coords(pos);
+        let region = self.get_or_load_region(rx, rz);
+        region
+            .entries
+            .get(&PoiRegion::pos_key(pos))
+            .is_some_and(|entry| entry.poi_type == poi_type)
+    }
+
     /// Get all POI positions within a square radius (for portal search)
     #[expect(clippy::similar_names)]
     pub fn get_in_square(
@@ -667,6 +682,22 @@ mod tests {
                 .find_closest_matching(BlockPos(Vector3::new(1000, 64, 100)), 16, |_| true)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn poi_exists_at_checks_position_and_type() {
+        let mut storage = PoiStorage::new(std::env::temp_dir().join("pumpkin_poi_exists_test"));
+        let pos = BlockPos(Vector3::new(100, 64, 100));
+        storage.add(pos, POI_TYPE_LODESTONE);
+
+        assert!(storage.exists_at(&pos, POI_TYPE_LODESTONE));
+        // Present, but of a different type.
+        assert!(!storage.exists_at(&pos, POI_TYPE_NETHER_PORTAL));
+        // A neighbouring position is not the registered one.
+        assert!(!storage.exists_at(&BlockPos(Vector3::new(101, 64, 100)), POI_TYPE_LODESTONE));
+
+        storage.remove(&pos);
+        assert!(!storage.exists_at(&pos, POI_TYPE_LODESTONE));
     }
 
     #[test]

@@ -237,7 +237,9 @@ use pumpkin_data::attributes::Attributes;
 use pumpkin_data::block_properties::HorizontalFacing;
 use pumpkin_data::damage::DamageType;
 use pumpkin_data::data_component_impl::{AttributeModifiersImpl, EnchantmentsImpl, Operation};
-use pumpkin_data::data_component_impl::{EquipmentSlot, EquippableImpl, ToolImpl, WeaponImpl};
+use pumpkin_data::data_component_impl::{
+    EquipmentSlot, EquippableImpl, LodestoneTrackerImpl, ToolImpl, WeaponImpl,
+};
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
 use pumpkin_data::item_stack::ItemStack;
@@ -2990,6 +2992,7 @@ impl Player {
         self.tick_health();
         self.tick_raid_omen();
         self.tick_maps(server);
+        self.tick_lodestone_compasses();
 
         // Anti-spam counter decay
         let anti_spam = &server.advanced_config.chat.anti_spam;
@@ -5323,6 +5326,47 @@ impl Player {
         }
     }
 
+    /// Clears lodestone tracker targets whose lodestone no longer exists.
+    ///
+    /// Mirrors `CompassItem#inventoryTick`; called once per player tick.
+    pub fn tick_lodestone_compasses(&self) {
+        let world = self.world();
+        let dimension = world.dimension.minecraft_name;
+
+        if let Ok(mut main) = self.inventory.main_inventory.try_write() {
+            for (slot, stack) in main.iter_mut().enumerate() {
+                if clear_stale_lodestone_tracker(stack, &world, dimension) {
+                    self.try_send_slot_set_packet(&CSetPlayerInventory::new(
+                        (slot as i32).into(),
+                        &ItemStackSerializer::from(stack.clone()),
+                    ));
+                }
+            }
+        }
+
+        if let Some(off_hand_slot) = self
+            .inventory
+            .equipment_slots
+            .get(&PlayerInventory::OFF_HAND_SLOT)
+            .cloned()
+        {
+            let mut equipment = self
+                .inventory
+                .entity_equipment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut stack = equipment.get(&off_hand_slot);
+            if clear_stale_lodestone_tracker(&mut stack, &world, dimension) {
+                equipment.put(&off_hand_slot, stack.clone());
+                drop(equipment);
+                self.try_send_slot_set_packet(&CSetPlayerInventory::new(
+                    (PlayerInventory::OFF_HAND_SLOT as i32).into(),
+                    &ItemStackSerializer::from(stack),
+                ));
+            }
+        }
+    }
+
     /// Sets the player's experience level and notifies the client.
     pub fn set_experience(&self, level: i32, progress: f32, points: i32) {
         let old_level = self.experience_level.load(Ordering::Relaxed);
@@ -6632,6 +6676,44 @@ impl Player {
             );
         }
     }
+}
+
+/// Mirrors `LodestoneTracker#tick` for one stack: clears the target when it is
+/// out of world bounds or its lodestone point of interest is gone.
+fn clear_stale_lodestone_tracker(
+    stack: &mut ItemStack,
+    world: &Arc<World>,
+    dimension: &str,
+) -> bool {
+    let Some(tracker) = stack.get_data_component::<LodestoneTrackerImpl>() else {
+        return false;
+    };
+    if !tracker.tracked {
+        return false;
+    }
+    let Some(target) = tracker.target.as_ref() else {
+        return false;
+    };
+    if target.dimension != dimension {
+        return false;
+    }
+
+    let pos = BlockPos(Vector3::new(target.x, target.y, target.z));
+    let exists = world.is_in_world_bounds(&pos)
+        && world
+            .portal_poi
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .exists_at(&pos, pumpkin_world::poi::POI_TYPE_LODESTONE);
+    if exists {
+        return false;
+    }
+
+    stack.set_data_component(LodestoneTrackerImpl {
+        target: None,
+        tracked: true,
+    });
+    true
 }
 
 impl PartialEq for Player {
