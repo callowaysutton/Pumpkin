@@ -10,23 +10,23 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use pumpkin_util::text::TextComponent;
 
-use super::container::{self, MinecartInventory};
+use crate::entity::vehicle::container::{self, VehicleInventory};
 
 #[derive(Clone)]
 pub(super) struct HopperMinecart {
     enabled: Arc<AtomicBool>,
-    inventory: Arc<MinecartInventory>,
+    inventory: Arc<VehicleInventory>,
 }
 
 impl HopperMinecart {
     pub(super) fn new() -> Self {
         Self {
             enabled: Arc::new(AtomicBool::new(true)),
-            inventory: Arc::new(MinecartInventory::new(5)),
+            inventory: Arc::new(VehicleInventory::new(5)),
         }
     }
 
-    pub(super) const fn inventory(&self) -> &Arc<MinecartInventory> {
+    pub(super) const fn inventory(&self) -> &Arc<VehicleInventory> {
         &self.inventory
     }
 
@@ -75,7 +75,7 @@ impl HopperMinecart {
 
     fn pick_up_item_internal(
         world: &Arc<crate::world::World>,
-        inventory: &Arc<MinecartInventory>,
+        inventory: &Arc<VehicleInventory>,
         search_box: &BoundingBox,
     ) -> bool {
         for entity in world.get_entities_at_box(search_box) {

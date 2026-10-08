@@ -1,3 +1,6 @@
+//! The shared container vehicle inventory, mirroring vanilla
+//! `net.minecraft.world.entity.vehicle.ContainerEntity`.
+
 use std::any::Any;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,15 +19,17 @@ use pumpkin_util::text::TextComponent;
 
 use crate::entity::{Entity, player::Player};
 
-pub(super) struct MinecartInventory {
+pub(in crate::entity::vehicle) struct VehicleInventory {
     items: RwLock<Vec<ItemStack>>,
     size: usize,
     loot_table: Mutex<Option<(String, i64)>>,
     drops_claimed: AtomicBool,
 }
 
-impl MinecartInventory {
-    pub(super) fn new(size: usize) -> Self {
+impl VehicleInventory {
+    /// A `ContainerHelper`-backed inventory; `size` is `CONTAINER_SIZE` of the
+    /// vanilla holder (27 for chest vehicles, 5 for the hopper minecart).
+    pub(in crate::entity::vehicle) fn new(size: usize) -> Self {
         Self {
             items: RwLock::new(vec![ItemStack::EMPTY.clone(); size]),
             size,
@@ -33,11 +38,11 @@ impl MinecartInventory {
         }
     }
 
-    pub(super) fn claim_drops(&self) -> bool {
+    pub(in crate::entity::vehicle) fn claim_drops(&self) -> bool {
         !self.drops_claimed.swap(true, Ordering::AcqRel)
     }
 
-    pub(super) fn read_nbt(&self, nbt: &NbtCompound) {
+    pub(in crate::entity::vehicle) fn read_nbt(&self, nbt: &NbtCompound) {
         let loot_table = nbt.get_string("LootTable").map(|loot_table| {
             (
                 loot_table.to_owned(),
@@ -55,7 +60,7 @@ impl MinecartInventory {
         }
     }
 
-    pub(super) fn write_nbt(&self, nbt: &mut NbtCompound) {
+    pub(in crate::entity::vehicle) fn write_nbt(&self, nbt: &mut NbtCompound) {
         let loot_table = self
             .loot_table
             .try_lock()
@@ -80,14 +85,14 @@ impl MinecartInventory {
         }
     }
 
-    pub(super) fn has_loot_table(&self) -> bool {
+    pub(in crate::entity::vehicle) fn has_loot_table(&self) -> bool {
         self.loot_table
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .is_some()
     }
 
-    pub(super) fn unpack_loot(self: &Arc<Self>) {
+    pub(in crate::entity::vehicle) fn unpack_loot(self: &Arc<Self>) {
         let loot_table = self
             .loot_table
             .lock()
@@ -109,7 +114,7 @@ impl MinecartInventory {
     }
 }
 
-impl Inventory for MinecartInventory {
+impl Inventory for VehicleInventory {
     fn size(&self) -> usize {
         self.size
     }
@@ -160,7 +165,7 @@ impl Inventory for MinecartInventory {
     }
 }
 
-impl Clearable for MinecartInventory {
+impl Clearable for VehicleInventory {
     fn clear(&self) {
         self.items
             .write()
@@ -169,13 +174,13 @@ impl Clearable for MinecartInventory {
     }
 }
 
-struct MinecartScreenFactory {
-    inventory: Arc<MinecartInventory>,
+struct VehicleScreenFactory {
+    inventory: Arc<VehicleInventory>,
     title: TextComponent,
     hopper: bool,
 }
 
-impl ScreenHandlerFactory for MinecartScreenFactory {
+impl ScreenHandlerFactory for VehicleScreenFactory {
     fn create_screen_handler(
         &self,
         sync_id: u8,
@@ -196,10 +201,10 @@ impl ScreenHandlerFactory for MinecartScreenFactory {
     }
 }
 
-pub(super) fn open(
+pub(in crate::entity::vehicle) fn open(
     custom_name: Option<TextComponent>,
     player: &Arc<Player>,
-    inventory: &Arc<MinecartInventory>,
+    inventory: &Arc<VehicleInventory>,
     title: TextComponent,
     hopper: bool,
 ) -> bool {
@@ -212,7 +217,7 @@ pub(super) fn open(
 
     player
         .open_handled_screen(
-            &MinecartScreenFactory {
+            &VehicleScreenFactory {
                 inventory: inventory.clone(),
                 title: custom_name.unwrap_or(title),
                 hopper,
@@ -222,9 +227,11 @@ pub(super) fn open(
         .is_some()
 }
 
-pub(super) fn velocity(
+/// Vanilla `AbstractMinecartContainer.applyNaturalSlowdown`: container vehicles
+/// coast further the emptier they are.
+pub(in crate::entity::vehicle) fn apply_natural_slowdown(
     entity: &Entity,
-    inventory: &MinecartInventory,
+    inventory: &VehicleInventory,
     velocity: Vector3<f64>,
 ) -> Vector3<f64> {
     let has_loot = inventory
@@ -268,7 +275,7 @@ pub(super) fn velocity(
 
 #[cfg(test)]
 mod tests {
-    use super::MinecartInventory;
+    use super::VehicleInventory;
     use pumpkin_data::item::Item;
     use pumpkin_data::item_stack::ItemStack;
     use pumpkin_inventory::Inventory;
@@ -276,7 +283,7 @@ mod tests {
 
     #[test]
     fn deferred_mineshaft_loot_is_preserved_until_unpacked() {
-        let inventory = std::sync::Arc::new(MinecartInventory::new(27));
+        let inventory = std::sync::Arc::new(VehicleInventory::new(27));
         let mut source = NbtCompound::new();
         source.put_string(
             "LootTable",
@@ -305,13 +312,13 @@ mod tests {
 
     #[test]
     fn chest_minecart_items_round_trip_through_nbt() {
-        let inventory = MinecartInventory::new(27);
+        let inventory = VehicleInventory::new(27);
         inventory.set_stack(8, ItemStack::new(3, &Item::POWERED_RAIL));
 
         let mut nbt = NbtCompound::new();
         inventory.write_nbt(&mut nbt);
 
-        let restored = MinecartInventory::new(27);
+        let restored = VehicleInventory::new(27);
         restored.read_nbt(&nbt);
         let stack = restored.get_stack(8);
         assert_eq!(stack.get_item().id, Item::POWERED_RAIL.id);

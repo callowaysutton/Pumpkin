@@ -50,6 +50,38 @@ impl BoatItem {
         }
     }
 
+    /// Vanilla passes a `Supplier<Item>` per boat subclass; mirrors [`item_to_entity`].
+    pub(crate) fn entity_to_item(entity_type: &EntityType) -> &'static Item {
+        match entity_type.id {
+            val if val == EntityType::OAK_BOAT.id => &Item::OAK_BOAT,
+            val if val == EntityType::OAK_CHEST_BOAT.id => &Item::OAK_CHEST_BOAT,
+            val if val == EntityType::SPRUCE_BOAT.id => &Item::SPRUCE_BOAT,
+            val if val == EntityType::SPRUCE_CHEST_BOAT.id => &Item::SPRUCE_CHEST_BOAT,
+            val if val == EntityType::BIRCH_BOAT.id => &Item::BIRCH_BOAT,
+            val if val == EntityType::BIRCH_CHEST_BOAT.id => &Item::BIRCH_CHEST_BOAT,
+            val if val == EntityType::JUNGLE_BOAT.id => &Item::JUNGLE_BOAT,
+            val if val == EntityType::JUNGLE_CHEST_BOAT.id => &Item::JUNGLE_CHEST_BOAT,
+            val if val == EntityType::ACACIA_BOAT.id => &Item::ACACIA_BOAT,
+            val if val == EntityType::ACACIA_CHEST_BOAT.id => &Item::ACACIA_CHEST_BOAT,
+            val if val == EntityType::DARK_OAK_BOAT.id => &Item::DARK_OAK_BOAT,
+            val if val == EntityType::DARK_OAK_CHEST_BOAT.id => &Item::DARK_OAK_CHEST_BOAT,
+            val if val == EntityType::MANGROVE_BOAT.id => &Item::MANGROVE_BOAT,
+            val if val == EntityType::MANGROVE_CHEST_BOAT.id => &Item::MANGROVE_CHEST_BOAT,
+            val if val == EntityType::CHERRY_BOAT.id => &Item::CHERRY_BOAT,
+            val if val == EntityType::CHERRY_CHEST_BOAT.id => &Item::CHERRY_CHEST_BOAT,
+            val if val == EntityType::PALE_OAK_BOAT.id => &Item::PALE_OAK_BOAT,
+            val if val == EntityType::PALE_OAK_CHEST_BOAT.id => &Item::PALE_OAK_CHEST_BOAT,
+            val if val == EntityType::POPLAR_BOAT.id => &Item::POPLAR_BOAT,
+            val if val == EntityType::POPLAR_CHEST_BOAT.id => &Item::POPLAR_CHEST_BOAT,
+            val if val == EntityType::BAMBOO_RAFT.id => &Item::BAMBOO_RAFT,
+            val if val == EntityType::BAMBOO_CHEST_RAFT.id => &Item::BAMBOO_CHEST_RAFT,
+            _ => {
+                tracing::error!("Unknown boat entity ID: {}", entity_type.resource_name);
+                &Item::OAK_BOAT
+            }
+        }
+    }
+
     /// Gets entity dimensions for the boat type
     const fn get_entity_dimensions(entity_type: &EntityType) -> EntityDimensions {
         EntityDimensions::new(
@@ -59,7 +91,6 @@ impl BoatItem {
         )
     }
 }
-
 impl ItemMetadata for BoatItem {
     fn ids() -> Box<[u16]> {
         [

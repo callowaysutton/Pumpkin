@@ -1,5 +1,4 @@
 mod chest;
-mod container;
 mod furnace;
 mod hopper;
 mod rideable;
@@ -28,9 +27,10 @@ use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 
+use crate::entity::vehicle::container::VehicleInventory;
+use crate::entity::vehicle::container::apply_natural_slowdown;
 use crate::entity::vehicle::vehicle::VehicleEntity;
 use chest::ChestMinecart;
-use container::MinecartInventory;
 use furnace::FurnaceMinecart;
 use hopper::HopperMinecart;
 use rideable::RideableMinecart;
@@ -91,7 +91,7 @@ impl MinecartEntity {
         }
     }
 
-    const fn container(&self) -> Option<&Arc<MinecartInventory>> {
+    const fn container(&self) -> Option<&Arc<VehicleInventory>> {
         match &self.kind {
             MinecartKind::Chest(minecart) => Some(minecart.inventory()),
             MinecartKind::Hopper(minecart) => Some(minecart.inventory()),
@@ -484,7 +484,7 @@ impl EntityBase for MinecartEntity {
             let mut next_vel = if is_on_rails && let MinecartKind::Furnace(minecart) = &self.kind {
                 minecart.velocity(&self.vehicle.entity, velocity)
             } else if is_on_rails && let Some(inventory) = self.container() {
-                container::velocity(&self.vehicle.entity, inventory, velocity)
+                apply_natural_slowdown(&self.vehicle.entity, inventory, velocity)
             } else {
                 velocity.multiply(friction, friction, friction)
             };
