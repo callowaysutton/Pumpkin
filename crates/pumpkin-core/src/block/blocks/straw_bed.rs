@@ -13,6 +13,7 @@ use pumpkin_world::world::BlockFlags;
 
 use crate::block::OnLandedUponArgs;
 use crate::block::UpdateEntityMovementAfterFallOnArgs;
+use crate::block::blocks::bed::BedBlock;
 use crate::block::bounce_entity_after_fall;
 use crate::block::registry::BlockActionResult;
 use crate::block::{
@@ -217,7 +218,6 @@ impl StrawBedBlock {
     fn sleep_refusal(
         world: &Arc<World>,
         player: &Arc<Player>,
-        occupied: bool,
         bed_head_pos: BlockPos,
         bed_foot_pos: BlockPos,
     ) -> Option<TextComponent> {
@@ -234,13 +234,6 @@ impl StrawBedBlock {
             return Some(pumpkin_macros::translate_cross!(
                 translation::java::BLOCK_MINECRAFT_BED_OBSTRUCTED,
                 translation::bedrock::TILE_BED_OBSTRUCTED
-            ));
-        }
-
-        if occupied {
-            return Some(pumpkin_macros::translate_cross!(
-                translation::java::BLOCK_MINECRAFT_BED_OCCUPIED,
-                translation::bedrock::TILE_BED_OCCUPIED
             ));
         }
 
@@ -304,13 +297,21 @@ impl StrawBedBlock {
             return BlockActionResult::SuccessServer;
         }
 
-        if let Some(message) = Self::sleep_refusal(
-            world,
-            player,
-            bed_props.occupied,
-            bed_head_pos,
-            bed_foot_pos,
-        ) {
+        // Make sure the bed is not occupied; wake a sleeping villager up instead
+        if bed_props.occupied {
+            if !BedBlock::kick_villager_out_of_bed(world, &bed_head_pos) {
+                player.send_system_message_raw(
+                    &pumpkin_macros::translate_cross!(
+                        translation::java::BLOCK_MINECRAFT_BED_OCCUPIED,
+                        translation::bedrock::TILE_BED_OCCUPIED
+                    ),
+                    true,
+                );
+            }
+            return BlockActionResult::SuccessServer;
+        }
+
+        if let Some(message) = Self::sleep_refusal(world, player, bed_head_pos, bed_foot_pos) {
             player.send_system_message_raw(&message, true);
             return BlockActionResult::SuccessServer;
         }
@@ -336,7 +337,7 @@ impl StrawBedBlock {
             pumpkin_data::statistic::CustomStatistic::SleepInStrawBed as i32,
             1,
         );
-        crate::block::blocks::bed::BedBlock::set_occupied(true, world, block, position, state_id);
+        BedBlock::set_occupied(true, world, block, position, state_id);
 
         BlockActionResult::SuccessServer
     }

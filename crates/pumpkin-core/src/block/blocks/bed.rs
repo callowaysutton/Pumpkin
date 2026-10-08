@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::block::entities::bed::BedBlockEntity;
 use pumpkin_data::block_properties::BedPart;
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::entity::{EntityPose, EntityType};
+use pumpkin_data::tag::Taggable;
 use pumpkin_data::translation;
 use pumpkin_data::{Block, BlockState, BlockStateId};
 use pumpkin_macros::pumpkin_block_from_tag;
@@ -216,6 +217,20 @@ impl BedBlock {
             return BlockActionResult::SuccessServer;
         }
 
+        // Make sure the bed is not occupied
+        if bed_props.occupied {
+            if !Self::kick_villager_out_of_bed(world, &bed_head_pos) {
+                player.send_system_message_raw(
+                    &pumpkin_macros::translate_cross!(
+                        translation::java::BLOCK_MINECRAFT_BED_OCCUPIED,
+                        translation::bedrock::TILE_BED_OCCUPIED
+                    ),
+                    true,
+                );
+            }
+            return BlockActionResult::SuccessServer;
+        }
+
         let is_dark = world.is_dark_outside();
         let can_sleep = world.dimension.bed_rule.can_sleep(is_dark);
         let can_set_spawn = world.dimension.bed_rule.can_set_spawn(is_dark);
@@ -239,20 +254,6 @@ impl BedBlock {
                 &pumpkin_macros::translate_cross!(
                     translation::java::BLOCK_MINECRAFT_BED_OBSTRUCTED,
                     translation::bedrock::TILE_BED_OBSTRUCTED
-                ),
-                true,
-            );
-            return BlockActionResult::SuccessServer;
-        }
-
-        // Make sure the bed is not occupied
-        if bed_props.occupied {
-            // TODO: Wake up villager
-
-            player.send_system_message_raw(
-                &pumpkin_macros::translate_cross!(
-                    translation::java::BLOCK_MINECRAFT_BED_OCCUPIED,
-                    translation::bedrock::TILE_BED_OCCUPIED
                 ),
                 true,
             );
@@ -354,6 +355,38 @@ impl BedBlock {
 }
 
 impl BedBlock {
+    /// Vanilla `AbstractBedBlock#kickVillagerOutOfBed`: wake the villager sleeping in the bed.
+    pub fn kick_villager_out_of_bed(world: &Arc<World>, bed_head_pos: &BlockPos) -> bool {
+        for entity in world.entities.load().iter() {
+            if entity.get_entity().entity_type.id != EntityType::VILLAGER.id
+                || entity.get_entity().pose.load() != EntityPose::Sleeping
+                || !entity
+                    .get_home_pos()
+                    .is_some_and(|home| home == *bed_head_pos)
+            {
+                continue;
+            }
+
+            // Same wake-up steps as Villager's own day-time wake-up.
+            let (block, state) = world.get_block_and_state(bed_head_pos);
+            if block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_BEDS) {
+                let bed_props = BedProperties::from_state_id(state.id);
+                if bed_props.occupied {
+                    Self::set_occupied(false, world, block, bed_head_pos, state.id);
+                }
+            }
+
+            let villager = entity.get_entity();
+            villager.set_pose(EntityPose::Standing);
+            villager.set_synced_data(
+                pumpkin_data::tracked_data::villager::SLEEPING_POS_ID,
+                None::<BlockPos>,
+            );
+            return true;
+        }
+        false
+    }
+
     pub fn set_occupied(
         occupied: bool,
         world: &Arc<World>,
