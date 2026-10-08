@@ -4,7 +4,7 @@ use crate::block::entities::BlockEntity;
 use crate::block::entities::chest::ChestBlockEntity;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::{ChestLikeProperties, ChestType, HorizontalFacing};
-use pumpkin_data::entity::EntityPose;
+use pumpkin_data::entity::{EntityPose, EntityType};
 use pumpkin_data::loot_table::get_loot_table;
 use pumpkin_data::{Block, BlockDirection, translation};
 use pumpkin_inventory::Inventory;
@@ -16,6 +16,7 @@ use pumpkin_inventory::screen_handler::{
 };
 use pumpkin_macros::{pumpkin_block, pumpkin_block_from_tag};
 use pumpkin_util::GameMode;
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::world::BlockFlags;
@@ -28,6 +29,7 @@ use crate::block::{
     registry::BlockActionResult,
 };
 use crate::entity::EntityBase;
+use crate::entity::passive::cat::CatEntity;
 use crate::entity::player::Player;
 use crate::world::World;
 use crate::world::loot::fill_chest_inventory;
@@ -591,9 +593,28 @@ fn get_chest_properties_if_can_connect(
 }
 
 fn is_chest_blocked(world: &World, block_pos: &BlockPos) -> bool {
-    // TODO: Block opening when a cat is sitting on top.
-    has_block_on_top(world, block_pos)
+    // Vanilla `ChestBlock#isChestBlockedAt`.
+    has_block_on_top(world, block_pos) || is_cat_sitting_on_chest(world, block_pos)
 }
+
+/// A cat sitting on top stops the chest from opening (vanilla `ChestBlock#isCatSittingOnChest`).
+fn is_cat_sitting_on_chest(world: &World, block_pos: &BlockPos) -> bool {
+    // Vanilla checks the cubic box spanning the block directly above the chest.
+    let above = block_pos.up().0.to_f64();
+    let search_box = BoundingBox::new(above, above.add_raw(1.0, 1.0, 1.0));
+
+    world
+        .get_entities_at_box(&search_box)
+        .into_iter()
+        .any(|entity| {
+            *entity.get_entity().entity_type == EntityType::CAT
+                && entity
+                    .cast_any()
+                    .downcast_ref::<CatEntity>()
+                    .is_some_and(CatEntity::is_sitting)
+        })
+}
+
 fn has_block_on_top(world: &World, block_pos: &BlockPos) -> bool {
     let above_pos = block_pos.up();
     let above_state = world.get_block_state(&above_pos);
