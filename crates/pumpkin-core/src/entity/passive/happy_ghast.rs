@@ -13,9 +13,10 @@ use pumpkin_nbt::compound::NbtCompound;
 use crate::entity::{
     Entity, EntityBase,
     ageable::{AgeableData, AgeableMob},
+    ai::control::ghast_move_control::GhastMoveControl,
     ai::goal::{
-        look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal, swim::SwimGoal,
-        tempt::TemptGoal, wander_around::WanderAroundGoal,
+        look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal,
+        random_float_around::RandomFloatAroundGoal, swim::SwimGoal, tempt::TemptGoal,
     },
     mob::{Mob, MobEntity},
     passive::animal::Animal,
@@ -54,6 +55,28 @@ impl HappyGhastEntity {
         };
 
         {
+            let mut navigator = mob_arc
+                .mob_entity
+                .navigator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *navigator = crate::entity::ai::pathfinder::Navigator::flying();
+        };
+
+        {
+            let mut move_control = mob_arc
+                .mob_entity
+                .move_control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *move_control = Box::new(GhastMoveControl::new(true, |mob| {
+                mob.cast_any()
+                    .downcast_ref::<Self>()
+                    .is_some_and(Self::is_on_still_timeout)
+            }));
+        };
+
+        {
             let mut goal_selector = mob_arc
                 .mob_entity
                 .goals_selector
@@ -70,7 +93,7 @@ impl HappyGhastEntity {
                     7.0,
                 )),
             );
-            goal_selector.add_goal(2, Box::new(WanderAroundGoal::new(1.0)));
+            goal_selector.add_goal(2, Box::new(RandomFloatAroundGoal::new(16)));
             goal_selector.add_goal(
                 3,
                 LookAtEntityGoal::with_default(mob_weak, &EntityType::PLAYER, 6.0),
@@ -152,6 +175,16 @@ impl Mob for HappyGhastEntity {
 
     fn get_mob_entity(&self) -> &MobEntity {
         &self.mob_entity
+    }
+
+    /// Vanilla happy ghasts travel with `travelFlying`, which never applies gravity.
+    fn get_mob_gravity(&self) -> f64 {
+        0.0
+    }
+
+    /// `travelFlying` scales vertical velocity by the same 0.91 air friction as the horizontal axes.
+    fn get_mob_y_velocity_drag(&self) -> Option<f64> {
+        Some(0.91)
     }
 
     fn mob_tick(&self, _caller: &dyn EntityBase) {
