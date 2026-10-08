@@ -3,9 +3,17 @@
 //! This module provides a lazy-loading cache for structure templates that are
 //! embedded in the binary at compile time using `include_bytes!`.
 
+use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use flate2::Compression;
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use pumpkin_nbt::Nbt;
+use pumpkin_nbt::nbt_compress::read_gzip_compound_tag;
+use pumpkin_util::identifier::Identifier;
 
 use super::{StructureTemplate, structure_template::TemplateError};
 
@@ -137,6 +145,140 @@ impl TemplateCache {
     pub fn clear(&self) {
         self.cache.clear();
     }
+
+    /// Vanilla `StructureTemplateManager#getOrCreate` + repository put: puts a
+    /// fully built template into the running cache under `name`.
+    pub fn store(&self, name: &str, mut template: StructureTemplate) {
+        let key = canonicalize(name);
+        template.name = Some(key.clone());
+        self.cache.insert(key, Arc::new(template));
+    }
+
+    /// Vanilla `StructureTemplateManager#save`: writes a template as compressed
+    /// NBT below the world's `generated` directory
+    /// (`generated/<namespace>/structure/<path>.nbt`) and keeps it in the
+    /// running cache, mirrored after the filled template stays in the vanilla
+    /// template repository even before the file write.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the name is not a valid identifier, its path can
+    /// not be turned into a portable file name, or the file write fails.
+    pub fn save(
+        &self,
+        name: &str,
+        template: &StructureTemplate,
+        generated_dir: &Path,
+    ) -> Result<(), TemplateSaveError> {
+        let identifier =
+            Identifier::parse(name).map_err(|_| TemplateSaveError::InvalidName(name.to_owned()))?;
+
+        let file = template_file(generated_dir, &identifier)?;
+        self.store(&canonicalize(name), template.clone());
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_template_compressed(&file, template)?;
+
+        Ok(())
+    }
+
+    /// Vanilla `StructureTemplateManager#remove`: drops the in-memory entry;
+    /// the file on disk stays.
+    pub fn remove(&self, name: &str) {
+        self.cache.remove(&canonicalize(name));
+    }
+
+    /// Vanilla `DirectoryTemplateSource`: reads a world-saved template from
+    /// `generated/<namespace>/structure/<path>.nbt`. Accepts both the vanilla
+    /// zlib encoding and Pumpkin's gzip encoding of the same payload.
+    #[must_use]
+    pub fn load_from_disk(&self, file: &Path) -> Option<StructureTemplate> {
+        let bytes = std::fs::read(file).ok()?;
+        let compound = if bytes.starts_with(gzip_magic()) {
+            read_gzip_compound_tag(std::io::Cursor::new(bytes.as_slice())).ok()?
+        } else {
+            let mut buf = Vec::new();
+            ZlibDecoder::new(std::io::Cursor::new(bytes.as_slice()))
+                .read_to_end(&mut buf)
+                .ok()?;
+            let mut reader = pumpkin_nbt::deserializer::NbtReadHelperJava::new(
+                std::io::Cursor::new(buf.as_slice()),
+            );
+            pumpkin_nbt::Nbt::read(&mut reader).ok()?.root_tag
+        };
+        StructureTemplate::from_nbt_compound(&compound).ok()
+    }
+}
+
+/// The gzip magic number (`1F 8B`), used to sniff world-saved template files.
+const fn gzip_magic() -> &'static [u8; 2] {
+    &[0x1F, 0x8B]
+}
+
+/// Where a saved structure template lives below the world's `generated`
+/// directory, mirroring vanilla's `TemplatePathFactory` and the 26.3
+/// `WORLD_STRUCTURE_LISTER` (`structure` prefix, `.nbt` suffix).
+fn template_file(
+    generated_dir: &Path,
+    identifier: &Identifier,
+) -> Result<std::path::PathBuf, TemplateSaveError> {
+    let file = generated_dir
+        .join(identifier.namespace())
+        .join("structure")
+        .join(format!("{}.nbt", identifier.path()));
+    for segment in identifier.path().split('/') {
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.starts_with('.')
+            || segment.contains('\\')
+            || segment.contains('\u{0}')
+        {
+            return Err(TemplateSaveError::InvalidName(identifier.to_string()));
+        }
+    }
+    Ok(file)
+}
+
+/// Vanilla `StructureTemplateManager#save`: zlib-compressed NBT with an empty
+/// root name, matching vanilla's `NbtIo.writeCompressed` output.
+fn write_template_compressed(
+    file: &Path,
+    template: &StructureTemplate,
+) -> Result<(), std::io::Error> {
+    let nbt = template.save();
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    Nbt::new(String::new(), nbt).write_to_writer(&mut encoder)?;
+    let bytes = encoder.finish()?;
+    std::fs::write(file, bytes)?;
+    Ok(())
+}
+
+/// Errors from [`TemplateCache::save`].
+#[derive(Debug)]
+pub enum TemplateSaveError {
+    /// The template name could not be turned into a file path.
+    InvalidName(String),
+    /// Writing the template file failed.
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for TemplateSaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidName(name) => write!(f, "can not save structure template '{name}'"),
+            Self::Io(error) => write!(f, "saving structure template failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for TemplateSaveError {}
+
+impl From<std::io::Error> for TemplateSaveError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
 }
 
 /// Global template cache instance.
@@ -185,4 +327,59 @@ pub const fn all_pool_names() -> &'static [&'static str] {
 #[must_use]
 pub const fn all_embedded_datapack_names() -> &'static [&'static str] {
     pumpkin_data::structure_template::all_embedded_datapack_names()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pumpkin_util::math::vector3::Vector3;
+
+    #[test]
+    fn save_load_round_trip_keeps_the_template() {
+        let cache = TemplateCache::new();
+        let mut template = StructureTemplate::default();
+        template.size = Vector3::new(3, 2, 4);
+
+        let generated_dir = std::env::temp_dir().join("pumpkin-template-cache-test");
+        let _ = std::fs::remove_dir_all(&generated_dir);
+        cache
+            .save("minecraft:test_saving", &template, &generated_dir)
+            .expect("template must save");
+
+        // The file lands at vanilla's `generated/<namespace>/structure` path
+        // with the same encoding the vanilla server writes.
+        let file = generated_dir
+            .join("minecraft")
+            .join("structure")
+            .join("test_saving.nbt");
+        assert!(file.exists());
+        assert!(std::fs::read(&file).map_or(false, |bytes| !bytes.starts_with(&[0x1F, 0x8B])));
+
+        // And it reloads through the world-generated scan path.
+        let loaded = cache
+            .load_from_disk(&file)
+            .expect("saved template must reload");
+        // Vanilla keeps the author out of the template file since the 26.2
+        // format, so only the size round-trips.
+        assert_eq!(loaded.size, Vector3::new(3, 2, 4));
+
+        // Non-portable names are rejected before any file is written.
+        assert!(
+            cache
+                .save("minecraft:..", &template, &generated_dir)
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(&generated_dir);
+    }
+
+    #[test]
+    fn store_and_remove_manage_the_cache_entry() {
+        let cache = TemplateCache::new();
+        let mut template = StructureTemplate::default();
+        template.set_author("tester".to_owned());
+        cache.store("test_storing", template);
+        assert!(cache.get("minecraft:test_storing").is_some());
+        cache.remove("test_storing");
+        assert!(cache.get("test_storing").is_none());
+    }
 }

@@ -174,6 +174,15 @@ impl DatapackManager {
             &mut loaded_packs_vec,
         );
 
+        // Vanilla keeps a `DirectoryTemplateSource` over the world's
+        // `generated` folder, so templates saved by structure blocks stay
+        // loadable after a restart. Registered after the datapacks so, like
+        // vanilla's source order, world-saved templates win over duplicates.
+        let generated_count = structure_loader::load_world_generated_structures(world_path);
+        if generated_count > 0 {
+            info!("Loaded {generated_count} world-generated structure(s)");
+        }
+
         let damage_type_registry = build_damage_type_registry(all_damage_type_defs);
 
         recipe_manager.set_recipes(all_recipes);
