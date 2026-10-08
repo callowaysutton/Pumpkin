@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use pumpkin_data::{
     Block, BlockDirection, BlockStateId, HorizontalFacingExt,
+    game_event::GameEvent,
     sound::{Sound, SoundCategory},
 };
 use pumpkin_macros::pumpkin_block;
@@ -45,7 +46,7 @@ impl BlockBehaviour for TripwireHookBlock {
         Self::can_place_at(
             args.block_accessor,
             args.position,
-            props.facing.to_block_direction(),
+            props.facing.to_block_direction().opposite(),
         )
     }
 
@@ -85,25 +86,7 @@ impl BlockBehaviour for TripwireHookBlock {
         if args.moved || Block::from_state_id(args.old_state_id) == args.block {
             return;
         }
-        let props = TripwireHookProperties::from_state_id(args.old_state_id);
-        if props.powered || props.attached {
-            Self::update(
-                args.world,
-                *args.position,
-                args.old_state_id,
-                true,
-                false,
-                -1,
-                None,
-            );
-        }
-        if props.powered {
-            args.world.update_neighbor(args.position, args.block);
-            args.world.update_neighbor(
-                &args.position.offset(props.facing.opposite().to_offset()),
-                args.block,
-            );
-        }
+        Self::on_removed(args.world, args.position, args.old_state_id);
     }
 
     #[inline]
@@ -142,7 +125,22 @@ impl TripwireHookBlock {
         }
         let place_block_pos = block_pos.offset(face.to_offset());
         let place_block_state = world.get_block_state(&place_block_pos);
-        place_block_state.is_side_solid(face)
+        place_block_state.is_side_solid(face.opposite())
+    }
+
+    /// `TripWireHookBlock.onRemoved` in Java.
+    fn on_removed(world: &Arc<World>, block_pos: &BlockPos, state_id: BlockStateId) {
+        let props = TripwireHookProperties::from_state_id(state_id);
+        if props.attached || props.powered {
+            Self::update(world, *block_pos, state_id, true, false, -1, None);
+        }
+        if props.powered {
+            Self::update_neighbors_on_axis(
+                world,
+                block_pos,
+                BlockDirection::from_cardinal_direction(props.facing),
+            );
+        }
     }
 
     #[expect(clippy::too_many_lines)]
@@ -218,12 +216,19 @@ impl TripwireHookBlock {
                 BlockFlags::NOTIFY_ALL,
             );
             Self::update_neighbors_on_axis(
-                &Block::TRIPWIRE_HOOK,
                 world,
-                end_hook_pos,
+                &end_hook_pos,
                 BlockDirection::from_cardinal_direction(future_hook_facing),
             );
-            Self::play_sound(
+            if world.get_block(&start_hook_pos) != &Block::TRIPWIRE_HOOK {
+                Self::on_removed(
+                    world,
+                    &start_hook_pos,
+                    future_hook_state.to_state_id(&Block::TRIPWIRE_HOOK),
+                );
+                return;
+            }
+            Self::emit_state(
                 world,
                 &end_hook_pos,
                 future_attached,
@@ -233,7 +238,7 @@ impl TripwireHookBlock {
             );
         }
 
-        Self::play_sound(
+        Self::emit_state(
             world,
             &start_hook_pos,
             future_attached,
@@ -252,9 +257,8 @@ impl TripwireHookBlock {
             );
             if notify_neighbors {
                 Self::update_neighbors_on_axis(
-                    &Block::TRIPWIRE_HOOK,
                     world,
-                    start_hook_pos,
+                    &start_hook_pos,
                     BlockDirection::from_cardinal_direction(start_hook_props.facing),
                 );
             }
@@ -265,20 +269,23 @@ impl TripwireHookBlock {
                 let current_wrie_pos =
                     start_hook_pos.offset_dir(start_hook_props.facing.to_offset(), l);
                 if let Some(mut lv8) = wires_props[l as usize] {
-                    lv8.attached = future_attached;
-                    world.set_block_state(
-                        &current_wrie_pos,
-                        lv8.to_state_id(&Block::TRIPWIRE),
-                        BlockFlags::NOTIFY_ALL,
-                    );
-                    // if world.get_block(&lv7) != Block::AIR {}
+                    let current_block = world.get_block(&current_wrie_pos);
+                    if current_block == &Block::TRIPWIRE || current_block == &Block::TRIPWIRE_HOOK {
+                        lv8.attached = future_attached;
+                        world.set_block_state(
+                            &current_wrie_pos,
+                            lv8.to_state_id(&Block::TRIPWIRE),
+                            BlockFlags::NOTIFY_ALL,
+                        );
+                    }
                 }
             }
         }
     }
 
+    /// `TripWireHookBlock.emitState` in Java.
     #[expect(clippy::fn_params_excessive_bools)]
-    fn play_sound(
+    fn emit_state(
         world: &Arc<World>,
         block_pos: &BlockPos,
         attached: bool,
@@ -287,33 +294,30 @@ impl TripwireHookBlock {
         off: bool,
     ) {
         let cat = SoundCategory::Blocks;
-        let pos = block_pos.to_f64();
+        let pos = block_pos.to_centered_f64();
         if on && !off {
             world.play_sound_raw(Sound::BlockTripwireClickOn as u16, cat, &pos, 0.4, 0.6);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_ACTIVATE, pos);
+            world.emit_game_event(GameEvent::BlockActivate.name(), pos);
         } else if !on && off {
             world.play_sound_raw(Sound::BlockTripwireClickOff as u16, cat, &pos, 0.4, 0.5);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_DEACTIVATE, pos);
+            world.emit_game_event(GameEvent::BlockDeactivate.name(), pos);
         } else if attached && !detached {
             world.play_sound_raw(Sound::BlockTripwireAttach as u16, cat, &pos, 0.4, 0.7);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_ATTACH, pos);
+            world.emit_game_event(GameEvent::BlockAttach.name(), pos);
         } else if !attached && detached {
             let pitch = 1.2 / rng().random::<f32>().mul_add(0.2, 0.9);
             world.play_sound_raw(Sound::BlockTripwireDetach as u16, cat, &pos, 0.4, pitch);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_DETACH, pos);
+            world.emit_game_event(GameEvent::BlockDetach.name(), pos);
         }
     }
 
+    /// `TripWireHookBlock.notifyNeighbors` in Java.
     pub fn update_neighbors_on_axis(
-        block: &Block,
         world: &Arc<World>,
-        block_pos: BlockPos,
+        block_pos: &BlockPos,
         direction: BlockDirection,
     ) {
-        world.update_neighbor(&block_pos, block);
-        world.update_neighbors(
-            &block_pos.offset(direction.opposite().to_offset()),
-            Some(direction),
-        );
+        world.update_neighbors(block_pos, None);
+        world.update_neighbors(&block_pos.offset(direction.opposite().to_offset()), None);
     }
 }
