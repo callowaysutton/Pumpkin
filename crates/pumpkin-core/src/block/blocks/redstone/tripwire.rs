@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use pumpkin_data::item::Item;
-use pumpkin_data::{Block, BlockDirection, BlockStateId, block_properties::HorizontalFacing};
+use pumpkin_data::{
+    Block, BlockDirection, BlockState, BlockStateId, block_properties::HorizontalFacing,
+};
 use pumpkin_macros::pumpkin_block;
 use pumpkin_util::math::{boundingbox::BoundingBox, position::BlockPos};
 use pumpkin_world::{tick::TickPriority, world::BlockFlags};
@@ -11,6 +13,7 @@ use crate::{
         BlockBehaviour, BrokenArgs, GetStateForNeighborUpdateArgs, OnEntityCollisionArgs,
         OnPlaceArgs, OnScheduledTickArgs, OnStateReplacedArgs, PlacedArgs,
     },
+    entity::EntityBase,
     world::World,
 };
 
@@ -24,20 +27,23 @@ pub struct TripwireBlock;
 
 impl BlockBehaviour for TripwireBlock {
     fn on_entity_collision(&self, args: OnEntityCollisionArgs<'_>) {
-        let mut props = TripwireProperties::from_state_id(args.state.id);
-        if props.powered {
+        // Vanilla `TripWireBlock#entityInside`: only re-check when the wire is not already
+        // powered and no re-check is already pending.
+        let props = TripwireProperties::from_state_id(args.state.id);
+        if props.powered
+            || args
+                .world
+                .is_block_tick_scheduled(args.position, args.block)
+        {
             return;
         }
-        props.powered = true;
-
-        let state_id = props.to_state_id(args.block);
-        args.world
-            .set_block_state(args.position, state_id, BlockFlags::NOTIFY_ALL);
-
-        Self::update(args.world, args.position, state_id);
-
-        args.world
-            .schedule_block_tick(args.block, *args.position, 10, TickPriority::Normal);
+        Self::check_pressed(
+            args.world,
+            args.position,
+            args.state,
+            args.block,
+            std::iter::once(args.entity),
+        );
     }
 
     fn on_place(&self, args: OnPlaceArgs<'_>) -> BlockStateId {
@@ -72,18 +78,27 @@ impl BlockBehaviour for TripwireBlock {
     }
 
     fn broken(&self, args: BrokenArgs<'_>) {
+        // Vanilla `TripWireBlock#playerWillDestroy`: shears disarm the wire.
         let has_shears = args.player.inventory().held_item().get_item() == &Item::SHEARS;
-        if has_shears {
-            let mut props = TripwireProperties::from_state_id(args.state.id);
-            props.disarmed = true;
-            args.world.set_block_state(
-                args.position,
-                props.to_state_id(args.block),
-                BlockFlags::empty(),
-            );
-            // TODO world.emitGameEvent(player, GameEvent.SHEAR, pos);
-            // TODO: Deduct 1 durability from held shears (skip in Creative mode).
+        if !has_shears {
+            return;
         }
+
+        let mut props = TripwireProperties::from_state_id(args.state.id);
+        props.disarmed = true;
+        let state_id = props.to_state_id(args.block);
+        // The block has already been removed at this point (Pumpkin calls `broken` after
+        // `break_block`), so the disarmed state is only used as the wire source state for the
+        // hook re-calculation instead of being written back to the world.
+        Self::update(args.world, args.position, state_id);
+
+        args.world.emit_game_event(
+            pumpkin_data::game_event::GameEvent::Shear.name(),
+            args.position.to_centered_f64(),
+        );
+        // Vanilla `ShearsItem#mineBlock` damages the tool by one regardless of the block's
+        // destroy speed (which is zero for tripwire).
+        args.player.damage_held_item(1);
     }
 
     fn get_state_for_neighbor_update(
@@ -106,38 +121,90 @@ impl BlockBehaviour for TripwireBlock {
 
     fn on_scheduled_tick(&self, args: OnScheduledTickArgs<'_>) {
         let state_id = args.world.get_block_state_id(args.position);
-
-        let mut props = TripwireProperties::from_state_id(state_id);
+        let state = state_id.to_state();
+        let props = TripwireProperties::from_state_id(state_id);
         if !props.powered {
             return;
         }
 
-        let aabb = BoundingBox::from_block(args.position);
-        // TODO entity.canAvoidTraps()
-        if args.world.get_entities_at_box(&aabb).is_empty()
-            && args.world.get_players_at_box(&aabb).is_empty()
-        {
-            props.powered = false;
-            let state_id = props.to_state_id(args.block);
-            args.world
-                .set_block_state(args.position, state_id, BlockFlags::NOTIFY_ALL);
-            Self::update(args.world, args.position, state_id);
-        } else {
-            args.world
-                .schedule_block_tick(args.block, *args.position, 10, TickPriority::Normal);
-        }
+        // Vanilla `TripWireBlock#tick` -> `checkPressed(level, pos)`.
+        let aabb = Self::entity_detection_box(state, args.position);
+        let entities = args.world.get_entities_at_box(&aabb);
+        let players = args.world.get_players_at_box(&aabb);
+        Self::check_pressed(
+            args.world,
+            args.position,
+            state,
+            args.block,
+            entities
+                .iter()
+                .map(|e| e.as_ref() as &dyn EntityBase)
+                .chain(players.iter().map(|p| p.as_ref() as &dyn EntityBase)),
+        );
     }
 
     fn on_state_replaced(&self, args: OnStateReplacedArgs<'_>) {
         if args.moved || Block::from_state_id(args.old_state_id) == args.block {
             return;
         }
-        let state_id = args.world.get_block_state_id(args.position);
-        Self::update(args.world, args.position, state_id);
+        // Vanilla `affectNeighborsAfterRemoval` forces `POWERED` true so the hook is
+        // re-evaluated as if the removed wire were still pressing it.
+        let mut props = TripwireProperties::from_state_id(args.old_state_id);
+        props.powered = true;
+        Self::update(args.world, args.position, props.to_state_id(args.block));
     }
 }
 
 impl TripwireBlock {
+    /// Vanilla `TripWireBlock#checkPressed`: recompute the pressed state from the entities
+    /// overlapping the wire, notify the attached hooks, and reschedule the re-check.
+    fn check_pressed<'a>(
+        world: &Arc<World>,
+        pos: &BlockPos,
+        state: &BlockState,
+        block: &Block,
+        entities: impl Iterator<Item = &'a dyn EntityBase>,
+    ) {
+        let mut props = TripwireProperties::from_state_id(state.id);
+        let was_pressed = props.powered;
+        let should_be_pressed = entities
+            .into_iter()
+            .any(|entity| !entity.is_ignoring_block_triggers());
+
+        if should_be_pressed != was_pressed {
+            props.powered = should_be_pressed;
+            let state_id = props.to_state_id(block);
+            world.set_block_state(pos, state_id, BlockFlags::NOTIFY_ALL);
+            Self::update(world, pos, state_id);
+        }
+
+        if should_be_pressed {
+            world.schedule_block_tick(block, *pos, 10, TickPriority::Normal);
+        } else if was_pressed {
+            world.schedule_block_tick(block, *pos, 1, TickPriority::Normal);
+        }
+    }
+
+    /// Vanilla `Block#getShape(...).bounds().move(pos)` for the wire's outline shape.
+    fn entity_detection_box(state: &BlockState, pos: &BlockPos) -> BoundingBox {
+        let mut shapes = state.get_block_outline_shapes_at(pos);
+        let Some(first) = shapes.next() else {
+            return BoundingBox::from_block(pos);
+        };
+        shapes.fold(first, |acc, shape| BoundingBox {
+            min: pumpkin_util::math::vector3::Vector3::new(
+                acc.min.x.min(shape.min.x),
+                acc.min.y.min(shape.min.y),
+                acc.min.z.min(shape.min.z),
+            ),
+            max: pumpkin_util::math::vector3::Vector3::new(
+                acc.max.x.max(shape.max.x),
+                acc.max.y.max(shape.max.y),
+                acc.max.z.max(shape.max.z),
+            ),
+        })
+    }
+
     fn update(world: &Arc<World>, pos: &BlockPos, state_id: BlockStateId) {
         for dir in [BlockDirection::South, BlockDirection::West] {
             for i in 1..42 {

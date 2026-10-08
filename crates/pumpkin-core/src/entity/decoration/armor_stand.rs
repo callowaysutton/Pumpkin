@@ -317,6 +317,10 @@ impl EntityBase for ArmorStandEntity {
         &self.living_entity.entity
     }
 
+    fn is_ignoring_block_triggers(&self) -> bool {
+        self.is_marker()
+    }
+
     fn get_living_entity(&self) -> Option<&LivingEntity> {
         Some(&self.living_entity)
     }
