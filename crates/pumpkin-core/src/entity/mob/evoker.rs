@@ -11,8 +11,9 @@ use pumpkin_util::math::vector3::Vector3;
 use crate::entity::{
     Entity, EntityBase,
     ai::goal::{
-        Controls, Goal, active_target::ActiveTargetGoal, look_around::RandomLookAroundGoal,
-        look_at_entity::LookAtEntityGoal, swim::SwimGoal, wander_around::WanderAroundGoal,
+        Controls, Goal, active_target::ActiveTargetGoal, avoid_entity::AvoidEntityGoal,
+        look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal, swim::SwimGoal,
+        wander_around::WanderAroundGoal,
     },
     mob::{
         Mob, MobEntity,
@@ -85,6 +86,14 @@ impl EvokerEntity {
 
             goal_selector.add_goal(0, Box::new(SwimGoal::default()));
             goal_selector.add_goal(1, Box::new(EvokerCastingSpellGoal::new(mob_weak.clone())));
+            goal_selector.add_goal(
+                2,
+                Box::new(AvoidEntityGoal::new(&EntityType::PLAYER, 8.0, 0.6, 1.0)),
+            );
+            goal_selector.add_goal(
+                3,
+                Box::new(AvoidEntityGoal::new(&EntityType::CREAKING, 8.0, 0.6, 1.0)),
+            );
             goal_selector.add_goal(2, Box::new(ObtainRaidLeaderBannerGoal));
             goal_selector.add_goal(3, Box::new(RaiderMoveThroughVillageGoal::new(1.05)));
             goal_selector.add_goal(3, Box::new(PathfindToRaidGoal::default()));
