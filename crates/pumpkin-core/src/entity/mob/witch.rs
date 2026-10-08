@@ -52,9 +52,10 @@ fn create_potion_stack(item: &'static Item, potion: &'static Potion) -> ItemStac
 
 /// Vanilla `NearestHealableRaiderTargetGoal`: finds a raider to throw a healing potion at.
 ///
-/// Unlike a plain [`ActiveTargetGoal`] the search is rate limited twice (a 500 tick interval and
-/// a coin flip), stays active while the mob has a raid, and starts a 200 tick cooldown so the
-/// witch does not immediately pick a new patient. While that cooldown runs the witch is not
+/// Vanilla overrides `canUse` and drops the 500 tick reciprocal interval of
+/// `NearestAttackableTargetGoal` entirely; only the coin flip below rate limits the search.
+/// The search therefore stays active while the mob has a raid, and starts a 200 tick cooldown so
+/// the witch does not immediately pick a new patient. While that cooldown runs the witch is not
 /// allowed to target players, see [`WitchAttackPlayersGoal`].
 pub struct WitchHealRaidersGoal {
     inner: Box<ActiveTargetGoal>,
@@ -67,9 +68,12 @@ impl WitchHealRaidersGoal {
     #[must_use]
     pub fn new(mob: &MobEntity, cooldown: Arc<AtomicI32>) -> Self {
         Self {
-            // Vanilla selects `Raider.class` with `!target.is(EntityTypes.WITCH)` and a 500 tick
-            // interval. Raiders are several entity types, so filter on the tag instead.
-            inner: ActiveTargetGoal::predicated(mob, 500, true, |target, _world| {
+            // Vanilla selects `Raider.class` with `!target.is(EntityTypes.WITCH)` and no reciprocal
+            // interval (`NearestHealableRaiderTargetGoal.canUse` bypasses `super.canUse`). A
+            // reciprocal chance of 0 disables that gate; the coin flip in `can_start` is the only
+            // rate limiting, exactly like vanilla. Raiders are several entity types, so filter on
+            // the tag instead of a single class.
+            inner: ActiveTargetGoal::predicated(mob, 0, true, |target, _world| {
                 target
                     .entity
                     .entity_type
@@ -369,9 +373,15 @@ impl Mob for WitchEntity {
         let world = entity.world.load();
 
         // Vanilla `Witch.aiStep`: the heal cooldown doubles as the gate on player targeting.
-        let heal_cooldown = self.heal_raiders_cooldown.fetch_sub(1, Ordering::Relaxed) - 1;
+        // Vanilla `decrementCooldown` is a plain `cooldown--`; clamp at 0 so a long-lived witch
+        // cannot wrap the counter around to positive after 2^31 ticks. Both the tick and the
+        // goal run on the entity's tick thread, so a plain load/store is enough.
+        let cooldown = self.heal_raiders_cooldown.load(Ordering::Relaxed);
+        let cooldown = (cooldown - 1).max(0);
+        self.heal_raiders_cooldown
+            .store(cooldown, Ordering::Relaxed);
         self.can_attack_players
-            .store(heal_cooldown <= 0, Ordering::Relaxed);
+            .store(cooldown <= 0, Ordering::Relaxed);
 
         if self.is_drinking_potion() {
             let remaining = self.using_time.fetch_sub(1, Ordering::Relaxed) - 1;
