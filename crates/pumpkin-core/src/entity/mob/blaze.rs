@@ -127,16 +127,13 @@ impl Mob for BlazeEntity {
 
         if let Some(target) = self.entity.get_target()
             && target.get_eye_pos().y
-                > base_entity.get_eye_pos().y
-                    + f64::from(self.allowed_height_offset.load())
+                > base_entity.get_eye_pos().y + f64::from(self.allowed_height_offset.load())
             && self.can_attack(target.as_ref())
         {
             let vel = base_entity.velocity.load();
-            base_entity.velocity.store(Vector3::new(
-                vel.x,
-                vel.y + (0.3 - vel.y) * 0.3,
-                vel.z,
-            ));
+            base_entity
+                .velocity
+                .store(Vector3::new(vel.x, vel.y + (0.3 - vel.y) * 0.3, vel.z));
             // The tracker broadcasts the velocity like vanilla's `hasImpulse` sync.
             base_entity.velocity_dirty.store(true, Ordering::SeqCst);
         }
@@ -146,9 +143,7 @@ impl Mob for BlazeEntity {
         let world = base_entity.world.load();
         let raining_at_feet = world.is_raining_at(&base_entity.block_pos.load());
         let raining_at_head = world.is_raining_at(&base_entity.bounding_box.load().max_block_pos());
-        if base_entity.touching_water.load(Ordering::Relaxed)
-            || raining_at_feet
-            || raining_at_head
+        if base_entity.touching_water.load(Ordering::Relaxed) || raining_at_feet || raining_at_head
         {
             caller.damage(caller, 1.0, DamageType::DROWN);
         }

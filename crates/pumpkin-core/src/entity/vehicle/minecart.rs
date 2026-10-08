@@ -27,9 +27,9 @@ use pumpkin_util::GameMode;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 
+use super::container::{self, ContainerVehicleInventory};
 use crate::entity::vehicle::vehicle::VehicleEntity;
 use chest::ChestMinecart;
-use super::container::{self, ContainerVehicleInventory};
 use furnace::FurnaceMinecart;
 use hopper::HopperMinecart;
 use rideable::RideableMinecart;
