@@ -1533,7 +1533,7 @@ impl LivingEntity {
         self.entity
             .update_velocity_from_input(self.movement_input.load(), speed);
 
-        self.apply_climbing_speed();
+        self.apply_climbing_speed(caller);
 
         self.make_move(caller);
 
@@ -1546,7 +1546,7 @@ impl LivingEntity {
         };
 
         if (self.entity.horizontal_collision.load(SeqCst) || self.jumping.load(SeqCst))
-            && (self.climbing.load(Relaxed) || can_powder_snow_climb)
+            && (caller.on_climbable() || can_powder_snow_climb)
         {
             velo.y = 0.2;
         }
@@ -1619,7 +1619,7 @@ impl LivingEntity {
             self.make_move(caller);
 
             let mut velo = self.entity.velocity.load();
-            if self.entity.horizontal_collision.load(SeqCst) && self.climbing.load(Relaxed) {
+            if self.entity.horizontal_collision.load(SeqCst) && caller.on_climbable() {
                 velo.y = 0.2;
             }
 
@@ -1739,8 +1739,8 @@ impl LivingEntity {
         }
     }
 
-    fn apply_climbing_speed(&self) {
-        if self.climbing.load(Relaxed) {
+    fn apply_climbing_speed(&self, caller: &dyn EntityBase) {
+        if caller.on_climbable() {
             self.fall_distance.store(0.0);
 
             let mut velo = self.entity.velocity.load();

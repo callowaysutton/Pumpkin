@@ -17,6 +17,7 @@ pub struct AvoidEntityGoal {
     flee_distance: f64,
     slow_speed: f64,
     fast_speed: f64,
+    avoid_predicate: Option<fn(&dyn EntityBase) -> bool>,
     target: Option<Arc<dyn EntityBase>>,
     flee_pos: Option<Vector3<f64>>,
 }
@@ -35,9 +36,17 @@ impl AvoidEntityGoal {
             flee_distance,
             slow_speed,
             fast_speed,
+            avoid_predicate: None,
             target: None,
             flee_pos: None,
         }
+    }
+
+    /// Vanilla's `avoidPredicate`, an extra condition on the entity being fled from.
+    #[must_use]
+    pub fn with_avoid_predicate(mut self, predicate: fn(&dyn EntityBase) -> bool) -> Self {
+        self.avoid_predicate = Some(predicate);
+        self
     }
 
     fn find_threat(&self, mob: &dyn Mob) -> Option<Arc<dyn EntityBase>> {
@@ -49,11 +58,17 @@ impl AvoidEntityGoal {
             world
                 .get_nearest_player(pos, self.flee_distance, |player| {
                     EntityPredicate::ExceptCreativeOrSpectator.test(player.get_entity())
+                        && self
+                            .avoid_predicate
+                            .is_none_or(|avoid| avoid(player.as_ref()))
                 })
                 .map(|p| p as Arc<dyn EntityBase>)
         } else {
             world.get_nearest_entity(pos, self.flee_distance, Some(&[self.flee_type]), |entity| {
                 EntityPredicate::ExceptCreativeOrSpectator.test(entity.get_entity())
+                    && self
+                        .avoid_predicate
+                        .is_none_or(|avoid| avoid(entity.as_ref()))
             })
         }
     }
