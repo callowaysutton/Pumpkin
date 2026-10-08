@@ -132,6 +132,8 @@ pub struct LivingEntity {
     /// The tick at which this entity was last hurt by a mob/entity.
     pub last_hurt_by_mob_time: AtomicI64,
 
+    /// Set when a sculk catalyst consumed the mob's experience on death.
+    pub skip_drop_experience: AtomicBool,
     water_movement_speed_multiplier: f32,
     livings_flags: AtomicU8,
 
@@ -311,6 +313,7 @@ impl LivingEntity {
             last_hurt_by_player_time: AtomicI64::new(0),
             last_hurt_by_mob_id: AtomicI32::new(0),
             last_hurt_by_mob_time: AtomicI64::new(0),
+            skip_drop_experience: AtomicBool::new(false),
             movement_input: AtomicCell::new(Vector3::default()),
             water_movement_speed_multiplier,
             last_block_pos: AtomicCell::new(None),
@@ -2078,17 +2081,28 @@ impl LivingEntity {
                 ..Default::default()
             };
 
+            // Vanilla fires `GameEvent.ENTITY_DIE` before dropping loot, so a
+            // nearby sculk catalyst can consume the mob's experience and mark
+            // it as consumed (blooming even when there is no experience).
+            let death_pos = self.entity.pos.load();
+            let charge = dyn_self.get_experience_reward(killer) as i32;
+            if world.handle_sculk_catalyst_death(death_pos, charge, &dyn_self) {
+                self.skip_drop_experience
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+
             // Drop loot
             self.drop_loot(&params);
 
             // Award experience
             if params.killed_by_player.unwrap_or(false)
                 && world.level_info.load().game_rules.mob_drops
+                && charge > 0
+                && !self
+                    .skip_drop_experience
+                    .load(std::sync::atomic::Ordering::Relaxed)
             {
-                let amount = dyn_self.get_experience_reward(killer);
-                if amount > 0 {
-                    ExperienceOrbEntity::spawn(&world, self.entity.pos.load(), amount);
-                }
+                ExperienceOrbEntity::spawn(&world, death_pos, charge as u32);
             }
             self.entity.pose.store(EntityPose::Dying);
 
