@@ -25,6 +25,15 @@ impl ItemBehaviour for FishingRodItem {
 
         if bobber_id == -1 {
             // Cast
+            let rod = player.inventory().held_item();
+            let lure_speed =
+                (crate::enchantment::helper::EnchantmentHelper::modify_fishing_time_reduction(
+                    &rod, 0.0,
+                ) * 20.0) as i32;
+            let luck =
+                crate::enchantment::helper::EnchantmentHelper::modify_fishing_luck_bonus(&rod, 0.0)
+                    as i32;
+
             world.play_sound(
                 Sound::EntityFishingBobberThrow,
                 SoundCategory::Neutral,
@@ -36,7 +45,7 @@ impl ItemBehaviour for FishingRodItem {
                 player.position(),
                 &EntityType::FISHING_BOBBER,
             );
-            let bobber = FishingBobberEntity::new(bobber_entity, player);
+            let bobber = FishingBobberEntity::new(bobber_entity, player, luck, lure_speed);
 
             let look_vec = player.living_entity.get_looking_vector();
             bobber
@@ -52,14 +61,19 @@ impl ItemBehaviour for FishingRodItem {
             world.spawn_entity(bobber_arc);
         } else {
             // Reel in
+            let rod = player.inventory().held_item();
+            let mut damage = 0;
             if let Some(bobber_base) = world.get_entity_by_id(bobber_id) {
                 if let Some(bobber) = bobber_base.cast_any().downcast_ref::<FishingBobberEntity>() {
-                    let _result = bobber.reel_in(player);
-                    // TODO: give items
+                    damage = bobber.reel_in(player, &rod);
                 }
                 bobber_base.get_entity().remove();
             }
             player.fishing_bobber.store(-1, Ordering::Relaxed);
+
+            if damage > 0 {
+                player.damage_held_item(damage);
+            }
 
             world.play_sound(
                 Sound::EntityFishingBobberRetrieve,
