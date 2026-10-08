@@ -527,6 +527,11 @@ pub trait EntityBase: Send + Sync + std::any::Any {
     /// Called when a player collides with an entity
     fn on_player_collision(&self, _player: &Arc<Player>) {}
 
+    /// Vanilla `Entity#removePassenger` post-hook, invoked after one of this
+    /// entity's passengers has actually been removed. Subclasses react here
+    /// (e.g. the cushion plays its get-up sound).
+    fn on_passenger_removed(&self) {}
+
     fn is_passenger(&self) -> bool {
         self.get_entity().has_vehicle()
     }
@@ -3537,22 +3542,36 @@ impl Entity {
         );
     }
 
+    /// Vanilla `Entity#removePassenger` post-removal notification. `Entity` has
+    /// no back-reference to its concrete `EntityBase`, so the wrapper is looked
+    /// up from the world. Mirrors vanilla's `getRemovalReason() == null` guard:
+    /// no reaction while the entity itself is being removed.
+    fn notify_passenger_removed(&self) {
+        if self.is_removed() {
+            return;
+        }
+        if let Some(base) = self.world.load().get_entity_by_id(self.entity_id) {
+            base.on_passenger_removed();
+        }
+    }
+
     pub(crate) fn remove_passenger_on_disconnect(&self, passenger_id: i32) {
         let mut passengers = self
             .passengers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(index) = passengers
+        let removed = passengers
             .iter()
             .position(|passenger| passenger.get_entity().entity_id == passenger_id)
-        {
-            let passenger = passengers.remove(index);
-            *passenger
-                .get_entity()
-                .vehicle
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        }
+            .is_some_and(|index| {
+                let passenger = passengers.remove(index);
+                *passenger
+                    .get_entity()
+                    .vehicle
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                true
+            });
 
         let passenger_ids: Vec<VarInt> = passengers
             .iter()
@@ -3564,6 +3583,10 @@ impl Entity {
             self.chunk_pos.load(),
             &CSetPassengers::new(VarInt(self.entity_id), &passenger_ids),
         );
+
+        if removed {
+            self.notify_passenger_removed();
+        }
     }
 
     pub fn remove_passenger_sync(&self, passenger_id: i32) {
@@ -3672,6 +3695,10 @@ impl Entity {
             } else {
                 world.broadcast_to_chunk(chunk_pos, &passengers_packet);
             }
+
+            // Vanilla `removePassenger` reacts to the passenger leaving before
+            // any dismount repositioning is computed.
+            self.notify_passenger_removed();
 
             if !reposition {
                 return;
