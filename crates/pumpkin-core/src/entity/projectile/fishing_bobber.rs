@@ -1,15 +1,12 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use crate::entity::experience_orb::ExperienceOrbEntity;
-use crate::entity::item::ItemEntity;
 use crate::entity::projectile::{ProjectileHit, is_projectile};
-use crate::world::loot::{LootContextParameters, generate_loot_from_handle};
 use crate::{
     entity::{Entity, EntityBase, living::LivingEntity, player::Player},
     server::Server,
 };
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::tag::Taggable;
 use pumpkin_util::math::boundingbox::BoundingBox;
@@ -23,6 +20,10 @@ pub struct FishingBobberEntity {
     pub has_hit: AtomicBool,
     pub wait_countdown: AtomicI32,
     pub bite_countdown: AtomicI32,
+    /// Luck of the Sea bonus, applied to the fishing loot table.
+    pub luck: i32,
+    /// Lure time reduction in ticks.
+    pub lure_speed: i32,
 }
 
 impl FishingBobberEntity {
@@ -30,7 +31,7 @@ impl FishingBobberEntity {
     const AIR_INERTIA: f64 = 0.92;
     const GRAVITY: f64 = 0.03;
 
-    pub fn new(entity: Entity, owner: &Player) -> Self {
+    pub fn new(entity: Entity, owner: &Player, luck: i32, lure_speed: i32) -> Self {
         let mut owner_pos = owner.living_entity.entity.pos.load();
         owner_pos.y += owner.living_entity.entity.get_eye_height() - 0.1;
         entity.pos.store(owner_pos);
@@ -41,113 +42,115 @@ impl FishingBobberEntity {
             hooked_entity_id: AtomicI32::new(0),
             in_ground: AtomicBool::new(false),
             has_hit: AtomicBool::new(false),
-            wait_countdown: AtomicI32::new(rand::random::<i32>().abs() % 600 + 100),
+            wait_countdown: AtomicI32::new(
+                (rand::random::<i32>().abs() % 600 + 100 - lure_speed.max(0)).max(1),
+            ),
             bite_countdown: AtomicI32::new(0),
+            luck: luck.max(0),
+            lure_speed: lure_speed.max(0),
         }
     }
 
-    /// Pulls a hooked entity towards the bobber's owner. Ports vanilla
-    /// `FishingHook#pullEntity`.
-    fn pull_entity(&self, entity: &dyn EntityBase) {
-        let world = self.entity.world.load();
-        let Some(owner) = world.get_entity_by_id(self.owner_id) else {
-            return;
-        };
-        let owner_pos = owner.get_entity().pos.load();
-        let bobber_pos = self.entity.pos.load();
-        let delta = (owner_pos - bobber_pos).multiply(0.1, 0.1, 0.1);
-        entity.get_entity().add_velocity(delta);
-    }
-
-    /// Ports vanilla `FishingHook#retrieve`. Returns the durability damage the
-    /// rod should take (0 when nothing was caught).
-    pub fn retrieve(&self, player: &Player) -> i32 {
+    pub fn reel_in(&self, player: &Player, rod: &ItemStack) -> i32 {
         let world = self.entity.world.load();
         let hooked_id = self.hooked_entity_id.load(Ordering::Relaxed);
-        let mut damage = 0;
 
         if hooked_id != 0
             && let Some(hooked) = world.get_entity_by_id(hooked_id)
         {
-            self.pull_entity(hooked.as_ref());
-            damage = if hooked.get_entity().entity_type == &EntityType::ITEM {
+            let player_pos = player.get_entity().pos.load();
+            let hooked_pos = hooked.get_entity().pos.load();
+            let delta = player_pos - hooked_pos;
+            let motion =
+                delta
+                    .multiply(0.1, 0.1, 0.1)
+                    .add_raw(0.0, delta.length().sqrt() * 0.08, 0.0);
+            hooked.get_entity().add_velocity(motion);
+            // Vanilla deals 3 durability when reeling an item entity in, 5 otherwise.
+            return if hooked.get_entity().entity_type == &pumpkin_data::entity::EntityType::ITEM {
                 3
             } else {
                 5
             };
-        } else if self.bite_countdown.load(Ordering::Relaxed) > 0 {
-            let rod = player.inventory().held_item();
-            let params = LootContextParameters {
-                position: Some(self.entity.pos.load()),
-                tool: Some(rod),
-                this_entity: Some(self.entity.entity_type),
-                luck: 0.0,
-                ..LootContextParameters::default()
+        }
+
+        if self.bite_countdown.load(Ordering::Relaxed) > 0 {
+            // Caught something, roll the fishing loot table like vanilla.
+            let bobber_pos = self.entity.pos.load();
+            let luck = crate::enchantment::helper::EnchantmentHelper::modify_fishing_luck_bonus(
+                rod,
+                self.luck as f32,
+            ) + player
+                .living_entity
+                .get_attribute_value(&pumpkin_data::attributes::Attributes::LUCK)
+                as f32;
+            let params = crate::world::loot::LootContextParameters {
+                tool: Some(rod.clone()),
+                luck,
+                position: Some(bobber_pos),
+                ..Default::default()
             };
 
-            if let Some(loot_table) = world.get_loot_table("minecraft:gameplay/fishing") {
-                let seed: i64 = rand::random();
-                let owner_pos = player.get_entity().pos.load();
-                let bobber_pos = self.entity.pos.load();
-                let delta = owner_pos - bobber_pos;
-                let speed = delta.length().sqrt() * 0.08;
+            let items = world
+                .get_loot_table("minecraft:gameplay/fishing")
+                .map_or_else(Vec::new, |table| {
+                    table.generate_loot_with_context(rand::random(), &params)
+                });
 
-                for stack in generate_loot_from_handle(&loot_table, seed, &params) {
-                    let velocity = delta.multiply(0.1, 0.1, 0.1).add_raw(0.0, speed, 0.0);
-                    let item_entity = Entity::new(world.clone(), bobber_pos, &EntityType::ITEM);
-                    let mut item_event =
-                        crate::plugin::api::events::entity::item_spawn::ItemSpawnEvent::new(
-                            item_entity.entity_id,
-                            bobber_pos,
-                            stack.item.registry_key.to_string(),
-                        );
-                    if let Some(server) = world.server.upgrade() {
-                        server
-                            .plugin_manager
-                            .fire_blocking(&server, &mut item_event);
-                    }
-                    if item_event.cancelled {
-                        continue;
-                    }
-                    let item = Arc::new(ItemEntity::new_with_velocity(
-                        item_entity,
-                        stack.clone(),
-                        velocity,
-                        ItemEntity::DEFAULT_PICKUP_DELAY,
-                    ));
-                    world.spawn_entity(item);
+            for item_stack in &items {
+                // Pull the item towards the player, as vanilla does.
+                let delta = player.position() - bobber_pos;
+                let motion = Vector3::new(
+                    delta.x * 0.1,
+                    delta.y * 0.1 + (delta.length() * delta.length()).sqrt().sqrt() * 0.08,
+                    delta.z * 0.1,
+                );
+                let item_entity = Arc::new(crate::entity::item::ItemEntity::new_with_velocity(
+                    Entity::new(
+                        world.clone(),
+                        bobber_pos,
+                        &pumpkin_data::entity::EntityType::ITEM,
+                    ),
+                    item_stack.clone(),
+                    motion,
+                    10,
+                ));
+                world.spawn_entity(item_entity);
 
-                    let orb_pos = Vector3::new(owner_pos.x, owner_pos.y + 0.5, owner_pos.z + 0.5);
-                    ExperienceOrbEntity::spawn(&world, orb_pos, rand::random_range(1..=6) as u32);
+                // Vanilla awards 1-6 experience per caught item, at the player.
+                let xp = rand::random::<u32>() % 6 + 1;
+                crate::entity::experience_orb::ExperienceOrbEntity::spawn(
+                    &world,
+                    player.position(),
+                    xp,
+                );
 
-                    if stack
-                        .item
-                        .has_tag(&pumpkin_data::tag::Item::MINECRAFT_FISHES)
-                    {
-                        player.increment_stat(
-                            pumpkin_data::statistic::StatisticCategory::Custom,
-                            pumpkin_data::statistic::CustomStatistic::FishCaught as i32,
-                            1,
-                        );
-                    }
-
-                    player.trigger_advancement(
-                        crate::entity::player::advancement::trigger::AdvancementTrigger::FishedItem {
-                            item_id: format!("minecraft:{}", stack.item.registry_key),
-                        },
+                if item_stack
+                    .item
+                    .has_tag(&pumpkin_data::tag::Item::MINECRAFT_FISHES)
+                {
+                    player.increment_stat(
+                        pumpkin_data::statistic::StatisticCategory::Custom,
+                        pumpkin_data::statistic::CustomStatistic::FishCaught as i32,
+                        1,
                     );
                 }
+
+                player.trigger_advancement(
+                    crate::entity::player::advancement::trigger::AdvancementTrigger::FishedItem {
+                        item_id: format!("minecraft:{}", item_stack.item.registry_key),
+                    },
+                );
             }
 
-            damage = 1;
+            return if self.in_ground.load(Ordering::Relaxed) {
+                2
+            } else {
+                1
+            };
         }
 
-        if self.in_ground.load(Ordering::Relaxed) {
-            damage = 2;
-        }
-
-        self.entity.remove();
-        damage
+        0
     }
 
     #[expect(clippy::too_many_lines)]
@@ -200,8 +203,10 @@ impl FishingBobberEntity {
                 } else {
                     // Start bite
                     self.bite_countdown.store(40, Ordering::Relaxed);
-                    self.wait_countdown
-                        .store(rand::random::<i32>().abs() % 600 + 100, Ordering::Relaxed);
+                    self.wait_countdown.store(
+                        (rand::random::<i32>().abs() % 600 + 100 - self.lure_speed).max(1),
+                        Ordering::Relaxed,
+                    );
 
                     world.play_sound(
                         Sound::EntityFishingBobberSplash,
