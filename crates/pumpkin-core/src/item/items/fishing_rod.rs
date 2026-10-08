@@ -61,13 +61,15 @@ impl ItemBehaviour for FishingRodItem {
             world.spawn_entity(bobber_arc);
         } else {
             // Reel in
-            let rod = player.inventory().held_item();
             let mut damage = 0;
             if let Some(bobber_base) = world.get_entity_by_id(bobber_id) {
                 if let Some(bobber) = bobber_base.cast_any().downcast_ref::<FishingBobberEntity>() {
-                    damage = bobber.reel_in(player, &rod);
+                    // Retrieval discards the bobber and returns the rod durability
+                    // damage, mirroring vanilla `FishingHook#retrieve`.
+                    damage = bobber.retrieve(player);
+                } else {
+                    bobber_base.get_entity().remove();
                 }
-                bobber_base.get_entity().remove();
             }
             player.fishing_bobber.store(-1, Ordering::Relaxed);
 
