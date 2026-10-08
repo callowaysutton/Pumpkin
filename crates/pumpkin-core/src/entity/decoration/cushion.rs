@@ -135,6 +135,20 @@ impl EntityBase for CushionEntity {
 
     fn tick(&self, _caller: &dyn EntityBase, _server: &Server) {}
 
+    /// Vanilla `Cushion#removePassenger`: play the get-up sound once the rider
+    /// has actually left, unless the cushion itself is being removed.
+    fn on_passenger_removed(&self) {
+        if self.entity.is_removed() {
+            return;
+        }
+        let world = self.entity.world.load();
+        world.play_sound(
+            Sound::EntityCushionGetUp,
+            SoundCategory::Blocks,
+            &self.entity.pos.load(),
+        );
+    }
+
     fn can_hit(&self) -> bool {
         self.entity.is_alive()
     }
