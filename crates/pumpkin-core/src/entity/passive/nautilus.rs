@@ -1,6 +1,6 @@
 use crossbeam::atomic::AtomicCell;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, Weak,
     atomic::{AtomicBool, AtomicI32, Ordering},
 };
 use uuid::Uuid;
@@ -8,24 +8,50 @@ use uuid::Uuid;
 use pumpkin_data::{
     effect::StatusEffect,
     entity::EntityStatus,
+    item::Item,
     item_stack::ItemStack,
     particle::Particle,
     potion::Effect,
     sound::{Sound, SoundCategory},
+    tag::{self, Taggable},
 };
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::vector3::Vector3;
 
 use crate::entity::{
     Entity, EntityBase,
+    ageable::{AgeableData, AgeableMob},
+    ai::goal::{
+        breed::BreedGoal, escape_danger::EscapeDangerGoal, look_around::RandomLookAroundGoal,
+        look_at_entity::LookAtEntityGoal, melee_attack::MeleeAttackGoal, revenge::RevengeGoal,
+        swim::SwimGoal, tempt::TemptGoal, wander_around::WanderAroundGoal,
+    },
     custom_sound::CustomSound,
     mob::{Mob, MobEntity},
     passive::animal::Animal,
     player::Player,
 };
 
+/// `minecraft:nautilus_food`, the items a nautilus follows.
+///
+/// Item lists are static in Pumpkin's goal system; the tag stays the source of truth for
+/// [`Animal::is_food`].
+const TEMPT_ITEMS: &[&Item] = &[
+    &Item::COD,
+    &Item::COOKED_COD,
+    &Item::SALMON,
+    &Item::COOKED_SALMON,
+    &Item::PUFFERFISH,
+    &Item::TROPICAL_FISH,
+    &Item::PUFFERFISH_BUCKET,
+    &Item::COD_BUCKET,
+    &Item::SALMON_BUCKET,
+    &Item::TROPICAL_FISH_BUCKET,
+];
+
 pub struct NautilusEntity {
     pub mob_entity: MobEntity,
+    pub ageable_data: AgeableData,
     pub is_tame: AtomicBool,
     pub owner: AtomicCell<Option<Uuid>>,
     pub is_dashing: AtomicBool,
@@ -39,6 +65,7 @@ impl NautilusEntity {
         let mob_entity = MobEntity::new(entity);
         let nautilus = Self {
             mob_entity,
+            ageable_data: AgeableData::default(),
             is_tame: AtomicBool::new(false),
             owner: AtomicCell::new(None),
             is_dashing: AtomicBool::new(false),
@@ -46,8 +73,52 @@ impl NautilusEntity {
             is_saddled: AtomicBool::new(false),
             inventory: Mutex::new(vec![ItemStack::new(0, &pumpkin_data::item::Item::AIR); 9]),
         };
+        let mob_arc = Arc::new(nautilus);
+        let mob_weak: Weak<dyn Mob> = {
+            let mob_arc: Arc<dyn Mob> = mob_arc.clone();
+            Arc::downgrade(&mob_arc)
+        };
 
-        Arc::new(nautilus)
+        // Ported from `NautilusAi`. The brain activities map onto Pumpkin's goal system:
+        // CORE -> Swim/EscapeDanger, IDLE -> Breed/Tempt/Wander/LookAround, FIGHT -> target
+        // selector (Revenge) plus the vanilla melee attack tick.
+        {
+            let mut goal_selector = mob_arc
+                .mob_entity
+                .goals_selector
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            goal_selector.add_goal(0, Box::new(SwimGoal::default()));
+            goal_selector.add_goal(1, EscapeDangerGoal::new(1.6));
+            goal_selector.add_goal(2, BreedGoal::new(0.4));
+            goal_selector.add_goal(3, Box::new(TemptGoal::new(1.3, TEMPT_ITEMS, false)));
+            // Vanilla's FIGHT activity uses a ChargeAttack; Pumpkin has no charge primitive yet,
+            // so the closest equivalent is the standard melee goal at the same 0.6 speed.
+            goal_selector.add_goal(4, Box::new(MeleeAttackGoal::new(0.6, true)));
+            goal_selector.add_goal(5, Box::new(WanderAroundGoal::new(1.0)));
+            goal_selector.add_goal(
+                6,
+                LookAtEntityGoal::with_default(
+                    mob_weak,
+                    &pumpkin_data::entity::EntityType::PLAYER,
+                    6.0,
+                ),
+            );
+            goal_selector.add_goal(7, Box::new(RandomLookAroundGoal::default()));
+        };
+
+        {
+            let mut target_selector = mob_arc
+                .mob_entity
+                .target_selector
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            target_selector.add_goal(1, Box::new(RevengeGoal::new(true)));
+        };
+
+        mob_arc
     }
 
     pub fn is_dashing(&self) -> bool {
@@ -157,13 +228,22 @@ impl NautilusEntity {
     }
 }
 
+impl AgeableMob for NautilusEntity {
+    fn get_ageable_data(&self) -> &AgeableData {
+        &self.ageable_data
+    }
+}
+
 impl Animal for NautilusEntity {
+    /// `AbstractNautilus.isFood`.
     fn is_food(&self, item_stack: &ItemStack) -> bool {
-        item_stack.item == &pumpkin_data::item::Item::NAUTILUS_SHELL
-            || item_stack.item == &pumpkin_data::item::Item::PUFFERFISH
-            || item_stack.item == &pumpkin_data::item::Item::COD
-            || item_stack.item == &pumpkin_data::item::Item::SALMON
-            || item_stack.item == &pumpkin_data::item::Item::TROPICAL_FISH
+        if !self.is_tame() && !self.is_baby() {
+            item_stack
+                .item
+                .has_tag(&tag::Item::MINECRAFT_NAUTILUS_TAMING_ITEMS)
+        } else {
+            item_stack.item.has_tag(&tag::Item::MINECRAFT_NAUTILUS_FOOD)
+        }
     }
 }
 
@@ -212,7 +292,12 @@ impl Mob for NautilusEntity {
         Some(self)
     }
 
+    fn as_ageable(&self) -> Option<&dyn AgeableMob> {
+        Some(self)
+    }
+
     fn mob_write_nbt(&self, nbt: &mut NbtCompound) {
+        self.write_ageable_nbt(nbt);
         nbt.put_bool("IsTame", self.is_tame.load(Ordering::Relaxed));
         nbt.put_bool("Saddled", self.is_saddled.load(Ordering::Relaxed));
         nbt.put_int("DashCooldown", self.dash_cooldown.load(Ordering::Relaxed));
@@ -222,6 +307,7 @@ impl Mob for NautilusEntity {
     }
 
     fn mob_read_nbt(&self, nbt: &NbtCompound) {
+        self.read_ageable_nbt(nbt);
         if let Some(is_tame) = nbt.get_bool("IsTame") {
             self.is_tame.store(is_tame, Ordering::Relaxed);
         }
@@ -248,6 +334,7 @@ impl Mob for NautilusEntity {
     }
 
     fn mob_tick(&self, _caller: &dyn EntityBase) {
+        self.ageable_ai_step();
         let entity = &self.mob_entity.living_entity.entity;
 
         let Ok(passengers) = entity.passengers.try_lock() else {
@@ -314,10 +401,22 @@ impl Mob for NautilusEntity {
         let mob_entity = &self.mob_entity;
         let entity = &mob_entity.living_entity.entity;
 
+        // Babies are only fed through the shared animal interaction, like vanilla's early return
+        // into `Animal.mobInteract` (which ages them up).
+        if self.is_baby() {
+            return self.animal_interact(player, item_stack, self.get_ambient_sound());
+        }
+
+        // Taming has priority over riding, and only applies to untamed adults.
         if !self.is_tame() && self.is_food(item_stack) {
             item_stack.decrement_unless_creative(player.gamemode.load(), 1);
             if rand::random::<u32>().is_multiple_of(3) {
                 self.set_tame(true, Some(player.gameprofile.id));
+                mob_entity
+                    .navigator
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .stop();
                 let world = entity.world.load();
                 world.send_entity_status(entity, EntityStatus::TamingSucceeded, None);
             } else {
@@ -331,6 +430,17 @@ impl Mob for NautilusEntity {
                 &entity.pos.load(),
             );
             return true;
+        }
+
+        // Tamed adults eat their food to heal, then can be saddled and ridden.
+        if self.is_tame() && self.is_food(item_stack) && entity.is_alive() {
+            let living = &mob_entity.living_entity;
+            if living.health.load() < living.get_max_health() {
+                item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+                living.heal(2.0);
+                self.play_eating_sound(self.get_eat_sound());
+                return true;
+            }
         }
 
         if self.is_tame() && !player.get_entity().is_sneaking() {
@@ -348,12 +458,14 @@ impl Mob for NautilusEntity {
                 return true;
             }
 
-            let world = player.world();
-            if let Some(vehicle) = world.get_entity_by_id(entity.entity_id)
-                && let Some(passenger) = world.get_player_by_id(player.entity_id())
-            {
-                entity.add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
-                return true;
+            if !self.is_food(item_stack) {
+                let world = player.world();
+                if let Some(vehicle) = world.get_entity_by_id(entity.entity_id)
+                    && let Some(passenger) = world.get_player_by_id(player.entity_id())
+                {
+                    entity.add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
+                    return true;
+                }
             }
         }
 
