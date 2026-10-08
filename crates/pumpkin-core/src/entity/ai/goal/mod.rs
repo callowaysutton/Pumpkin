@@ -9,6 +9,7 @@ pub mod blaze_attack;
 pub mod bow_attack;
 pub mod break_door;
 pub mod breed;
+pub mod breeze_attack;
 pub mod chase_player;
 pub mod creeper_ignite;
 pub mod destroy_egg;
