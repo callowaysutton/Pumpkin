@@ -922,6 +922,17 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    /// Vanilla `AbstractSkeleton#getHardAttackInterval`/`getAttackInterval` selection for
+    /// the bow cooldown. `hard` is true when the world difficulty is Hard. Returning `None`
+    /// keeps the interval the goal was created with.
+    fn bow_attack_interval(&self, _hard: bool) -> Option<i32> {
+        None
+    }
+
+    /// Vanilla `AbstractSkeleton#getArrow`: lets skeleton variants decorate the arrow
+    /// they fire, e.g. Parched applies Weakness on hit.
+    fn modify_fired_arrow(&self, _arrow: &crate::entity::projectile::arrow::ArrowEntity) {}
+
     fn can_replace_current_item(
         &self,
         new_item: &ItemStack,
@@ -940,6 +951,12 @@ pub trait Mob: EntityBase + Send + Sync {
     /// Called before damage is applied. Return `false` to cancel the damage entirely.
     /// Used by endermen to dodge projectiles via teleportation.
     fn pre_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) -> bool {
+        true
+    }
+
+    /// Called before an effect is applied. Return `false` to make the entity immune.
+    /// Mirrors vanilla `LivingEntity#canBeAffected` (e.g. Parched is immune to Weakness).
+    fn can_be_affected(&self, _effect: &pumpkin_data::potion::Effect) -> bool {
         true
     }
 

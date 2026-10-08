@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -9,7 +10,10 @@ use crate::{
 };
 use bytes::BufMut;
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::data_component_impl::PotionDurationScaleImpl;
+use pumpkin_data::data_component_impl::{
+    PotionContentsImpl, PotionDurationScaleImpl, StatusEffectInstance,
+};
+use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -229,6 +233,41 @@ impl ArrowEntity {
 
     const fn should_apply_post_hurt_effects(damage_succeeded: bool) -> bool {
         damage_succeeded
+    }
+
+    /// Adds a potion effect that is applied to the victim on hit.
+    /// Mirrors vanilla `Arrow#addEffect` by appending to the arrow's `PotionContents`.
+    pub fn add_effect(&self, effect: &'static StatusEffect, duration: i32, amplifier: u8) {
+        Self::add_potion_effect(&self.item_stack, effect, duration, amplifier);
+    }
+
+    fn add_potion_effect(
+        item_stack: &RwLock<ItemStack>,
+        effect: &'static StatusEffect,
+        duration: i32,
+        amplifier: u8,
+    ) {
+        let mut item_stack = item_stack
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut contents = item_stack
+            .get_data_component::<PotionContentsImpl>()
+            .cloned()
+            .unwrap_or(PotionContentsImpl {
+                potion_id: None,
+                custom_color: None,
+                custom_effects: Vec::new(),
+                custom_name: None,
+            });
+        contents.custom_effects.push(StatusEffectInstance {
+            effect_id: Cow::Borrowed(effect.minecraft_name),
+            amplifier: i32::from(amplifier),
+            duration,
+            ambient: false,
+            show_particles: true,
+            show_icon: true,
+        });
+        item_stack.set_data_component(contents);
     }
 
     #[must_use]
@@ -1126,6 +1165,7 @@ mod tests {
     use pumpkin_data::entity::EntityType;
     use pumpkin_data::item::Item;
     use pumpkin_data::item_stack::ItemStack;
+    use std::sync::RwLock;
 
     fn tipped_payload(count: u8) -> ItemStack {
         let mut tipped = ItemStack::new(32, &Item::TIPPED_ARROW);
@@ -1225,5 +1265,26 @@ mod tests {
         let power_5 = base_damage + 5.0 * 0.5 + 0.5;
         assert_eq!(power_1, 3.0);
         assert_eq!(power_5, 5.0);
+    }
+
+    #[test]
+    fn added_effect_is_read_back_for_on_hit_application() {
+        let stack = RwLock::new(ItemStack::new(1, &Item::ARROW));
+
+        ArrowEntity::add_potion_effect(
+            &stack,
+            &pumpkin_data::effect::StatusEffect::WEAKNESS,
+            600,
+            0,
+        );
+
+        let stack = stack.read().unwrap();
+        let effects = crate::item::potion::PotionContents::read_potion_effects(&stack);
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].0, &pumpkin_data::effect::StatusEffect::WEAKNESS);
+        assert_eq!(effects[0].1, 600);
+        assert_eq!(effects[0].2, 0);
+        // A tinted arrow is expected for a weakness-tainted arrow.
+        assert_ne!(ArrowEntity::get_effect_color(&stack), -1);
     }
 }
