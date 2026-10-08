@@ -228,6 +228,16 @@ impl ArmadilloEntity {
     }
 
     pub fn brush_off_scute(&self, player: &Arc<Player>) -> bool {
+        if !self.drop_scute() {
+            return false;
+        }
+        player.damage_held_item(16);
+        true
+    }
+
+    /// Drops an armadillo scute (unless this is a baby). The caller is responsible for
+    /// damaging the tool used to brush, matching vanilla's `Armadillo#brushOffScute`.
+    pub fn drop_scute(&self) -> bool {
         if self.is_baby() {
             return false;
         }
@@ -240,7 +250,6 @@ impl ArmadilloEntity {
         ));
         world.spawn_entity(item_entity);
         world.play_sound(Sound::EntityArmadilloBrush, SoundCategory::Neutral, &pos);
-        player.damage_held_item(16);
         true
     }
 
