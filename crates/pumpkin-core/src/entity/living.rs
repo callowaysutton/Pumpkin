@@ -1680,7 +1680,7 @@ impl LivingEntity {
         self.entity.move_entity(caller, self.entity.velocity.load());
 
         self.check_climbing(caller);
-    },
+    }
 
     fn check_climbing(&self, caller: &dyn EntityBase) {
         // If spectator: return false

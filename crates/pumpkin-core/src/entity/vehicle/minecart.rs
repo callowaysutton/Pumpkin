@@ -29,7 +29,7 @@ use pumpkin_util::math::vector3::Vector3;
 
 use crate::entity::vehicle::vehicle::VehicleEntity;
 use chest::ChestMinecart;
-use container::MinecartInventory;
+use super::container::{self, ContainerVehicleInventory};
 use furnace::FurnaceMinecart;
 use hopper::HopperMinecart;
 use rideable::RideableMinecart;
@@ -90,7 +90,7 @@ impl MinecartEntity {
         }
     }
 
-    const fn container(&self) -> Option<&Arc<MinecartInventory>> {
+    const fn container(&self) -> Option<&Arc<ContainerVehicleInventory>> {
         match &self.kind {
             MinecartKind::Chest(minecart) => Some(minecart.inventory()),
             MinecartKind::Hopper(minecart) => Some(minecart.inventory()),
@@ -483,7 +483,7 @@ impl EntityBase for MinecartEntity {
             let mut next_vel = if is_on_rails && let MinecartKind::Furnace(minecart) = &self.kind {
                 minecart.velocity(&self.vehicle.entity, velocity)
             } else if is_on_rails && let Some(inventory) = self.container() {
-                container::velocity(&self.vehicle.entity, inventory, velocity)
+                container::damped_velocity(&self.vehicle.entity, inventory, velocity)
             } else {
                 velocity.multiply(friction, friction, friction)
             };
