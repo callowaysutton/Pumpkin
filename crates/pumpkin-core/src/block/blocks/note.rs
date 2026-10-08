@@ -3,10 +3,13 @@ use crate::block::{
     GetStateForNeighborUpdateArgs, NormalUseArgs, OnNeighborUpdateArgs, OnPlaceArgs,
     UseWithItemArgs,
 };
-use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::{Axis, NoteblockInstrument};
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::sound::{Sound, SoundCategory};
-use pumpkin_data::{Block, block_properties::NoteBlockLikeProperties};
+use pumpkin_data::tag::{Item as ItemTag, Taggable};
+use pumpkin_data::{
+    Block, BlockDirection, BlockStateId, block_properties::NoteBlockLikeProperties,
+};
 use pumpkin_macros::pumpkin_block;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::world::BlockFlags;
@@ -36,6 +39,7 @@ impl NoteBlock {
                 return;
             }
             world.add_synced_block_event(*pos, 0, 0);
+            world.emit_game_event(GameEvent::NoteBlockPlay.name(), pos.to_centered_f64());
         }
     }
     fn get_note_pitch(note: u16) -> f32 {
@@ -105,8 +109,16 @@ impl BlockBehaviour for NoteBlock {
         BlockActionResult::Success
     }
 
-    fn use_with_item(&self, _args: UseWithItemArgs<'_>) -> BlockActionResult {
-        // TODO
+    fn use_with_item(&self, args: UseWithItemArgs<'_>) -> BlockActionResult {
+        // Vanilla lets right-clicks with a mob head place it on top instead of tuning the note
+        if args
+            .item_stack
+            .item
+            .has_tag(&ItemTag::MINECRAFT_NOTEBLOCK_TOP_INSTRUMENTS)
+            && *args.hit.face == BlockDirection::Up
+        {
+            return BlockActionResult::Pass;
+        }
         BlockActionResult::PassToDefaultBlockAction
     }
 
@@ -188,6 +200,7 @@ const fn convert_instrument_to_sound(instrument: NoteblockInstrument) -> Sound {
     }
 }
 
+// NoteBlockInstrument.Type.BASE_BLOCK
 const fn is_base_block(instrument: NoteblockInstrument) -> bool {
     matches!(
         instrument,
@@ -206,5 +219,10 @@ const fn is_base_block(instrument: NoteblockInstrument) -> bool {
             | NoteblockInstrument::Didgeridoo
             | NoteblockInstrument::Bit
             | NoteblockInstrument::Banjo
+            | NoteblockInstrument::Pling
+            | NoteblockInstrument::Trumpet
+            | NoteblockInstrument::TrumpetExposed
+            | NoteblockInstrument::TrumpetOxidized
+            | NoteblockInstrument::TrumpetWeathered
     )
 }
