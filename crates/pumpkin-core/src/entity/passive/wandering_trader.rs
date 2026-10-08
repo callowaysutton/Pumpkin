@@ -674,6 +674,12 @@ impl Mob for WanderingTraderEntity {
         Some(self)
     }
 
+    fn as_wandering_trader(
+        &self,
+    ) -> Option<&crate::entity::passive::wandering_trader::WanderingTraderEntity> {
+        Some(self)
+    }
+
     fn mob_write_nbt(&self, nbt: &mut NbtCompound) {
         nbt.put_int("DespawnDelay", self.despawn_delay.load(Ordering::Relaxed));
         let wander_target = *self

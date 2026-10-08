@@ -173,6 +173,7 @@ pub mod entity_tracker;
 pub mod environment;
 pub mod natural_spawner;
 pub mod scoreboard;
+pub mod wandering_trader_spawner;
 pub mod weather;
 
 pub use environment::EnvironmentAttributes;
@@ -298,6 +299,9 @@ pub struct World {
     pub custom_block_entity_data: DashMap<BlockPos, NbtCompound>,
     /// Entity tracker responsible for tracking entity visibility and sending delta/status packets to watchers.
     pub entity_tracker: entity_tracker::EntityTracker,
+    /// Vanilla `WanderingTraderSpawner`, active on the Overworld only.
+    pub wandering_trader_spawner:
+        std::sync::Mutex<wandering_trader_spawner::WanderingTraderSpawner>,
 }
 
 #[derive(Clone, Copy)]
@@ -431,6 +435,9 @@ impl World {
             custom_data: std::sync::Mutex::new(custom_data),
             custom_block_entity_data: DashMap::new(),
             entity_tracker: entity_tracker::EntityTracker::new(),
+            wandering_trader_spawner: std::sync::Mutex::new(
+                wandering_trader_spawner::WanderingTraderSpawner::new(),
+            ),
         }
     }
 
@@ -1528,6 +1535,7 @@ impl World {
         self.flush_synced_block_events();
         self.update_active_chunks();
         self.tick_environment();
+        self.tick_wandering_trader_spawner();
         let mut raids = {
             let mut guard = self
                 .raids
@@ -1868,6 +1876,18 @@ impl World {
                     }
                 }
             }
+        }
+    }
+
+    /// Ticks the vanilla `WanderingTraderSpawner`. Vanilla runs custom spawners on
+    /// the Overworld only, once per level tick.
+    fn tick_wandering_trader_spawner(self: &Arc<Self>) {
+        if self.dimension != Dimension::OVERWORLD {
+            return;
+        }
+        let spawn_wandering_traders = self.level_info.load().game_rules.spawn_wandering_traders;
+        if let Ok(mut spawner) = self.wandering_trader_spawner.lock() {
+            spawner.tick(self, spawn_wandering_traders);
         }
     }
 
@@ -6963,6 +6983,10 @@ impl World {
 
         if let Ok(mut portal_poi) = self.portal_poi.try_lock() {
             let _ = portal_poi.save_all();
+        }
+
+        if let Ok(spawner) = self.wandering_trader_spawner.lock() {
+            spawner.save(&self.level.level_folder.root_folder);
         }
 
         {
