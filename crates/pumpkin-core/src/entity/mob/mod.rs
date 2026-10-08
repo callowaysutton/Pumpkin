@@ -1050,6 +1050,12 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    /// Vanilla `Vindicator.isJohnny`: a vindicator named "Johnny" attacks every living
+    /// entity. Only vindicators return `true` here.
+    fn is_johnny(&self) -> bool {
+        false
+    }
+
     /// Vanilla `Mob.finalizeSpawn`, run before the mob enters the world on spawns that
     /// vanilla finalizes. Overrides call `finalize_spawn_base` first. Riders queued with
     /// `add_pending_rider` are added by the world together with the mob.
