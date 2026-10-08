@@ -1,5 +1,4 @@
 use pumpkin_data::BlockStateId;
-use pumpkin_data::biome::Biome;
 use pumpkin_data::block_properties::HorizontalAxis;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::fluid::Fluid;
@@ -119,25 +118,7 @@ impl FireBlock {
     }
 
     fn is_increased_burnout_biome(world: &World, pos: &BlockPos) -> bool {
-        // Fire burnout increases in the Nether
-        if world.dimension == Dimension::THE_NETHER {
-            return true;
-        }
-
-        // Fire burnout increases in specific biomes
-        // TODO: Use proper tag or bool for this when available
-        let biome_id = world.level.get_rough_biome(pos).id;
-        matches!(
-            biome_id,
-            id if id == Biome::BAMBOO_JUNGLE.id
-                || id == Biome::MUSHROOM_FIELDS.id
-                || id == Biome::MANGROVE_SWAMP.id
-                || id == Biome::SNOWY_SLOPES.id
-                || id == Biome::FROZEN_PEAKS.id
-                || id == Biome::JAGGED_PEAKS.id
-                || id == Biome::SWAMP.id
-                || id == Biome::JUNGLE.id
-        )
+        world.level.get_rough_biome(pos).increased_fire_burnout
     }
 
     fn try_spreading_fire(&self, world: &Arc<World>, pos: &BlockPos, chance: i32, age: u8) {
