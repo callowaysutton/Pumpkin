@@ -105,6 +105,7 @@ use crate::entity::passive::villager::VillagerEntity;
 use crate::entity::passive::wandering_trader::WanderingTraderEntity;
 use crate::entity::passive::wolf::WolfEntity;
 use crate::entity::passive::zombie_horse::ZombieHorseEntity;
+use crate::entity::passive::zombie_nautilus::ZombieNautilusEntity;
 use crate::entity::projectile::ThrownItemEntity;
 use crate::entity::projectile::arrow::ArrowEntity;
 use crate::entity::projectile::egg::EggEntity;
@@ -225,6 +226,7 @@ pub fn from_type(
         id if id == EntityType::TADPOLE.id => TadpoleEntity::new(entity),
         id if id == EntityType::DOLPHIN.id => DolphinEntity::new(entity),
         id if id == EntityType::NAUTILUS.id => NautilusEntity::new(entity),
+        id if id == EntityType::ZOMBIE_NAUTILUS.id => ZombieNautilusEntity::new(entity),
 
         id if id == EntityType::SNOW_GOLEM.id => SnowGolemEntity::new(entity),
         id if id == EntityType::IRON_GOLEM.id => IronGolemEntity::new(entity),
@@ -642,7 +644,7 @@ pub fn check_spawn_rules(
                     .get_fluid(pos)
                     .has_tag(&pumpkin_data::tag::Fluid::MINECRAFT_WATER));
     }
-    if id == EntityType::NAUTILUS.id {
+    if id == EntityType::NAUTILUS.id || id == EntityType::ZOMBIE_NAUTILUS.id {
         let sea_level = world.sea_level;
         let min_spawn_level = sea_level - 25;
         return pos.0.y >= min_spawn_level
