@@ -2,6 +2,7 @@ use super::{Mob, MobEntity};
 use crate::entity::ai::goal::break_door::BreakDoorGoal;
 use crate::entity::ai::goal::destroy_egg::DestroyEggGoal;
 use crate::entity::ai::goal::look_around::RandomLookAroundGoal;
+use crate::entity::ai::goal::move_through_village::MoveThroughVillageGoal;
 use crate::entity::ai::goal::revenge::RevengeGoal;
 use crate::entity::ai::goal::swim::SwimGoal;
 use crate::entity::ai::goal::wander_around::WanderAroundGoal;
@@ -69,6 +70,7 @@ impl ZombieEntityBase {
             }
             goal_selector.add_goal(2, ZombieAttackGoal::new(1.0, false));
             goal_selector.add_goal(4, DestroyEggGoal::new(1.0, 3));
+            goal_selector.add_goal(6, Box::new(MoveThroughVillageGoal::new(1.0, true, 4)));
             goal_selector.add_goal(7, Box::new(WanderAroundGoal::new(1.0)));
             goal_selector.add_goal(
                 8,

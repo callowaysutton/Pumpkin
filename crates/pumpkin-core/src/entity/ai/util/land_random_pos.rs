@@ -10,6 +10,20 @@ use crate::world::World;
 /// and water is rejected.
 #[must_use]
 pub fn get_pos(mob: &dyn Mob, horizontal_dist: i32, vertical_dist: i32) -> Option<Vector3<f64>> {
+    get_pos_with_weight(mob, horizontal_dist, vertical_dist, |pos| {
+        f64::from(mob.get_walk_target_value(pos))
+    })
+}
+
+/// Vanilla `LandRandomPos.getPos(mob, horizontalDist, verticalDist, positionWeight)`: the caller
+/// supplies the weight each candidate is scored with.
+#[must_use]
+pub fn get_pos_with_weight(
+    mob: &dyn Mob,
+    horizontal_dist: i32,
+    vertical_dist: i32,
+    position_weight: impl Fn(&BlockPos) -> f64,
+) -> Option<Vector3<f64>> {
     let restrict = goal_utils::mob_restricted(mob, f64::from(horizontal_dist));
     let world = mob.get_entity().world.load_full();
     let block_pos = mob.get_entity().block_pos.load();
@@ -33,7 +47,7 @@ pub fn get_pos(mob: &dyn Mob, horizontal_dist: i32, vertical_dist: i32) -> Optio
             )?;
             move_pos_up_out_of_solid(mob, &world, &mut context, pos)
         },
-        |pos| f64::from(mob.get_walk_target_value(pos)),
+        position_weight,
     )
 }
 

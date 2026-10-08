@@ -1,9 +1,22 @@
 use std::{collections::HashMap, sync::Weak};
 
-use pumpkin_data::{Block, villager::VillagerProfession};
+use pumpkin_data::{
+    Block, BlockState,
+    block_properties::BedPart,
+    block_properties::BedProperties,
+    tag::{self, Taggable},
+    villager::VillagerProfession,
+};
 use pumpkin_util::math::position::BlockPos;
 
 use crate::entity::EntityBase;
+
+/// Vanilla POI type for a bed's head: `minecraft:home`.
+pub const POI_TYPE_HOME: &str = "minecraft:home";
+/// Vanilla POI type for a bell: `minecraft:meeting`.
+pub const POI_TYPE_MEETING: &str = "minecraft:meeting";
+/// Maximum number of tickets a `minecraft:meeting` POI has in vanilla.
+pub const MEETING_MAX_TICKETS: i32 = 32;
 
 struct JobSite {
     profession: VillagerProfession,
@@ -152,6 +165,35 @@ pub fn profession_for_block(block: &Block) -> Option<VillagerProfession> {
     }
 }
 
+/// Vanilla `PoiTypes.forState` for the POI types that make up the `minecraft:village` tag
+/// but are not villager job sites: bed heads (`minecraft:home`) and bells (`minecraft:meeting`).
+#[must_use]
+pub fn village_poi_type_for_block(
+    block: &Block,
+    state: &BlockState,
+) -> Option<(&'static str, i32)> {
+    if block == &Block::BELL {
+        return Some((POI_TYPE_MEETING, MEETING_MAX_TICKETS));
+    }
+    if block.has_tag(&tag::Block::MINECRAFT_BEDS)
+        && BedProperties::from_state_id(state.id).r#part == BedPart::Head
+    {
+        return Some((POI_TYPE_HOME, 1));
+    }
+    None
+}
+
+/// Whether `poi_type` (a `minecraft:`-prefixed POI type id) is in the `minecraft:village` tag.
+#[must_use]
+pub fn is_village_poi_type(poi_type: &str) -> bool {
+    let Some(name) = poi_type.strip_prefix("minecraft:") else {
+        return false;
+    };
+    tag::PointOfInterestType::MINECRAFT_VILLAGE
+        .0
+        .contains(&name)
+}
+
 #[must_use]
 pub fn poi_type_for_block(block: &Block) -> Option<&'static str> {
     Some(match profession_for_block(block)? {
@@ -206,6 +248,53 @@ mod tests {
         }
         assert_eq!(profession_for_block(&Block::DIRT), None);
         assert_eq!(poi_type_for_block(&Block::DIRT), None);
+    }
+
+    #[test]
+    fn only_bed_heads_and_bells_are_village_pois() {
+        let head = BedProperties {
+            r#part: BedPart::Head,
+            ..BedProperties::default(&Block::RED_BED)
+        }
+        .to_state_id(&Block::RED_BED);
+        let foot = BedProperties {
+            r#part: BedPart::Foot,
+            ..BedProperties::default(&Block::RED_BED)
+        }
+        .to_state_id(&Block::RED_BED);
+
+        assert_eq!(
+            village_poi_type_for_block(&Block::RED_BED, BlockState::from_id(head)),
+            Some((POI_TYPE_HOME, 1))
+        );
+        assert_eq!(
+            village_poi_type_for_block(&Block::RED_BED, BlockState::from_id(foot)),
+            None
+        );
+        assert_eq!(
+            village_poi_type_for_block(
+                &Block::BELL,
+                BlockState::from_id(Block::BELL.default_state.id)
+            ),
+            Some((POI_TYPE_MEETING, MEETING_MAX_TICKETS))
+        );
+        assert_eq!(
+            village_poi_type_for_block(
+                &Block::STONE,
+                BlockState::from_id(Block::STONE.default_state.id)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn village_tag_covers_job_sites_homes_and_meetings() {
+        assert!(is_village_poi_type(POI_TYPE_HOME));
+        assert!(is_village_poi_type(POI_TYPE_MEETING));
+        assert!(is_village_poi_type("minecraft:farmer"));
+        assert!(!is_village_poi_type("minecraft:beehive"));
+        assert!(!is_village_poi_type("minecraft:nether_portal"));
+        assert!(!is_village_poi_type("farmer"));
     }
 
     #[test]

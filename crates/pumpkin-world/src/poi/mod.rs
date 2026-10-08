@@ -593,6 +593,83 @@ impl PoiStorage {
         best.map(|(pos, poi_type, _)| (pos, poi_type))
     }
 
+    /// Returns the chebyshev distance in sections (16-block sections) between `center` and the
+    /// nearest POI matching `matches`, saturating at `max_distance`, or `max_distance + 1` if
+    /// none exists. This is the equivalent of vanilla `PoiManager`'s section distance tracker: the
+    /// number of 26-connected section steps to the nearest matching section equals the chebyshev
+    /// distance between the sections.
+    ///
+    /// Only regions already held in memory are consulted. Village POIs are registered through
+    /// [`Self::add`], which loads (and caches) the region it writes to, so a region holding a
+    /// village POI the server placed is always loaded. This keeps the check off the disk on the
+    /// entity tick thread.
+    pub fn min_loaded_section_distance_matching(
+        &self,
+        center: BlockPos,
+        max_distance: i32,
+        matches: impl Fn(&str) -> bool,
+    ) -> i32 {
+        let radius = max_distance << 4;
+        let min_rx = ((center.0.x - radius) >> 4) >> 5;
+        let max_rx = ((center.0.x + radius) >> 4) >> 5;
+        let min_rz = ((center.0.z - radius) >> 4) >> 5;
+        let max_rz = ((center.0.z + radius) >> 4) >> 5;
+
+        let mut best = max_distance + 1;
+        for rx in min_rx..=max_rx {
+            for rz in min_rz..=max_rz {
+                let Some(region) = self.regions.get(&(rx, rz)) else {
+                    continue;
+                };
+                for entry in region.get_all() {
+                    let dx = ((entry.x >> 4) - (center.0.x >> 4)).abs();
+                    let dy = ((entry.y >> 4) - (center.0.y >> 4)).abs();
+                    let dz = ((entry.z >> 4) - (center.0.z >> 4)).abs();
+                    let distance = dx.max(dy).max(dz);
+                    if distance <= max_distance && distance < best && matches(&entry.poi_type) {
+                        best = distance;
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// Vanilla `PoiManager.find`: the first POI matching `matches` and passing `filter` within
+    /// `radius` blocks (3D squared distance) of `center`.
+    pub fn find_in_range(
+        &mut self,
+        center: BlockPos,
+        radius: i32,
+        matches: impl Fn(&str) -> bool,
+        filter: impl Fn(&BlockPos) -> bool,
+    ) -> Option<(BlockPos, String)> {
+        let radius_sq = radius * radius;
+        let min_rx = ((center.0.x - radius) >> 4) >> 5;
+        let max_rx = ((center.0.x + radius) >> 4) >> 5;
+        let min_rz = ((center.0.z - radius) >> 4) >> 5;
+        let max_rz = ((center.0.z + radius) >> 4) >> 5;
+
+        for rx in min_rx..=max_rx {
+            for rz in min_rz..=max_rz {
+                let region = self.get_or_load_region(rx, rz);
+                for entry in region.get_all() {
+                    let dx = i64::from(entry.x - center.0.x);
+                    let dy = i64::from(entry.y - center.0.y);
+                    let dz = i64::from(entry.z - center.0.z);
+                    if dx * dx + dy * dy + dz * dz > i64::from(radius_sq) {
+                        continue;
+                    }
+                    let pos = entry.pos();
+                    if matches(&entry.poi_type) && filter(&pos) {
+                        return Some((pos, entry.poi_type.clone()));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn save_all(&mut self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.folder)?;
 

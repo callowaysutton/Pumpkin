@@ -265,6 +265,10 @@ impl Mob for ZombieVillagerEntity {
         self.mob_entity.spawn_as_baby()
     }
 
+    fn can_break_doors(&self) -> bool {
+        self.mob_entity.can_break_doors()
+    }
+
     fn remove_when_far_away(&self, _distance_sq: f64) -> bool {
         !self.is_converting() && self.villager_xp.load(Ordering::Relaxed) == 0
     }
