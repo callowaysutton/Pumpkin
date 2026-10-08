@@ -1414,6 +1414,8 @@ impl LivingEntity {
 
         if !effective_ai {
             // No travel.
+        } else if caller.travel(caller) {
+            // The entity overrides travel (e.g. Squid) and already moved itself.
         } else if (touching_water || self.entity.touching_lava.load(SeqCst))
             && should_swim_in_fluids
             && self.entity.entity_type != &EntityType::STRIDER

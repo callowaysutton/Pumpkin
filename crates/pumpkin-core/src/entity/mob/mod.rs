@@ -965,6 +965,13 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    /// Vanilla `Entity.travel(Vec3)` override hook. Return `true` when the mob
+    /// handles its own movement (e.g. a squid moving by its own delta movement),
+    /// so `tick_movement` skips the default water/air travel.
+    fn travel(&self, _caller: &dyn EntityBase) -> bool {
+        false
+    }
+
     fn as_ageable(&self) -> Option<&dyn crate::entity::ageable::AgeableMob> {
         None
     }
@@ -1561,6 +1568,10 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
     fn get_y_velocity_drag(&self) -> Option<f64> {
         self.get_mob_y_velocity_drag()
+    }
+
+    fn travel(&self, caller: &dyn EntityBase) -> bool {
+        Mob::travel(self, caller)
     }
 
     fn get_experience_reward(&self, _killer: Option<&dyn EntityBase>) -> u32 {

@@ -374,6 +374,13 @@ pub trait EntityBase: Send + Sync + std::any::Any {
         None
     }
 
+    /// Vanilla `Entity.travel(Vec3)` override hook. Return `true` when the entity
+    /// handles its own movement (e.g. a squid moving by its own delta movement),
+    /// so `tick_movement` skips the default water/air travel.
+    fn travel(&self, _caller: &dyn EntityBase) -> bool {
+        false
+    }
+
     fn java_spawn_metadata(&self, version: JavaMinecraftVersion) -> Option<Box<[u8]>> {
         if version < JavaMinecraftVersion::V_1_9 {
             let entity = self.get_entity();
