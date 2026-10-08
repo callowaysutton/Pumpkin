@@ -1,95 +1,94 @@
 use crate::block::BlockIsReplacing;
 use crate::block::blocks::plant::PlantBlockBase;
-use crate::block::registry::BlockActionResult;
 use crate::block::{
-    BlockBehaviour, CanPlaceAtArgs, CanUpdateAtArgs, GetStateForNeighborUpdateArgs, OnPlaceArgs,
-    PathComputationType, UseWithItemArgs,
+    BlockBehaviour, BonemealArgs, CanPlaceAtArgs, CanUpdateAtArgs, GetStateForNeighborUpdateArgs,
+    OnPlaceArgs, PathComputationType,
 };
 use crate::entity::EntityBase;
 use pumpkin_data::entity::EntityPose;
-use pumpkin_data::item::Item;
 use pumpkin_data::tag::Taggable;
 use pumpkin_data::{Block, BlockDirection, BlockState, BlockStateId, tag};
 use pumpkin_macros::pumpkin_block;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::random::{RandomGenerator, RandomImpl, xoroshiro128::Xoroshiro};
 use pumpkin_world::world::BlockFlags;
-use rand::RngExt;
 
 type SeaPickleProperties = pumpkin_data::block_properties::SeaPickleLikeProperties;
 
 #[pumpkin_block("minecraft:sea_pickle")]
 pub struct SeaPickleBlock;
 
+impl SeaPickleBlock {
+    /// A sea pickle is "dead" once it is no longer waterlogged.
+    #[must_use]
+    pub fn is_dead(state_id: BlockStateId) -> bool {
+        !SeaPickleProperties::from_state_id(state_id).waterlogged
+    }
+}
+
 impl BlockBehaviour for SeaPickleBlock {
-    fn use_with_item(&self, args: UseWithItemArgs<'_>) -> BlockActionResult {
-        {
-            if args.item_stack.item != &Item::BONE_MEAL
-                || !args
-                    .world
-                    .get_block(&args.position.down())
-                    .has_tag(&tag::Block::MINECRAFT_CORAL_BLOCKS)
-                || !SeaPickleProperties::from_state_id(args.world.get_block_state_id(args.position))
-                    .waterlogged
-            {
-                return BlockActionResult::Pass;
-            }
+    fn is_valid_bonemeal_target(&self, args: BonemealArgs<'_>) -> bool {
+        !Self::is_dead(args.state_id)
+            && args
+                .world
+                .get_block(&args.position.down())
+                .has_tag(&tag::Block::MINECRAFT_CORAL_BLOCKS)
+    }
 
-            //1:1 vanilla algorithm
-            //TODO use pumpkin random
+    fn is_bonemeal_success(&self, _args: BonemealArgs<'_>) -> bool {
+        true
+    }
 
-            //let mut j = 1;
-            let mut count = 0;
-            let base_x = args.position.0.x - 2;
-            let mut removed_z = 0;
-            for added_x in 0..5 {
-                for added_z in 0..1 {
-                    let temp_y = 2 + args.position.0.y - 1;
-                    for y in (temp_y - 2)..temp_y {
-                        //let mut lv2: BlockState;
-                        let lv = BlockPos::new(
-                            base_x + added_x,
-                            y,
-                            args.position.0.z - removed_z + added_z,
-                        );
-                        if &lv == args.position
-                            || rand::rng().random_range(0..6) != 0
-                            || !args.world.get_block(&lv).eq(&Block::WATER)
-                            || !args
-                                .world
-                                .get_block(&lv.down())
-                                .has_tag(&tag::Block::MINECRAFT_CORAL_BLOCKS)
-                        {
-                            continue;
-                        }
-                        let mut sea_pickle_prop = SeaPickleProperties::default(args.block);
+    fn perform_bonemeal(&self, args: BonemealArgs<'_>) {
+        // 1:1 vanilla algorithm (SeaPickleBlock#performBonemeal).
+        let mut random = RandomGenerator::Xoroshiro(Xoroshiro::from_seed(rand::random::<u64>()));
 
-                        sea_pickle_prop.pickles = rand::rng().random_range(1..=4);
-                        args.world.set_block_state(
-                            &lv,
-                            sea_pickle_prop.to_state_id(args.block),
-                            BlockFlags::NOTIFY_ALL,
-                        );
+        let base_x = args.position.0.x - 2;
+        let mut z_off_set = 0;
+        let mut z_span = 1;
+        let mut count = 0;
+        for added_x in 0..5 {
+            for added_z in 0..z_span {
+                let end_y = 2 + args.position.0.y - 1;
+                for y in (end_y - 2)..end_y {
+                    let lv =
+                        BlockPos::new(base_x + added_x, y, args.position.0.z - z_off_set + added_z);
+                    if &lv == args.position
+                        || random.next_bounded_i32(6) != 0
+                        || !args.world.get_block(&lv).eq(&Block::WATER)
+                        || !args
+                            .world
+                            .get_block(&lv.down())
+                            .has_tag(&tag::Block::MINECRAFT_CORAL_BLOCKS)
+                    {
+                        continue;
                     }
+                    let mut sea_pickle_prop = SeaPickleProperties::default(args.block);
+                    sea_pickle_prop.pickles = (random.next_bounded_i32(4) + 1) as u8;
+                    args.world.set_block_state(
+                        &lv,
+                        sea_pickle_prop.to_state_id(args.block),
+                        BlockFlags::NOTIFY_ALL,
+                    );
                 }
-                if count < 2 {
-                    //j += 2;
-                    removed_z += 1;
-                } else {
-                    //j -= 2;
-                    removed_z -= 1;
-                }
-                count += 1;
             }
-            let mut sea_pickle_prop = SeaPickleProperties::default(args.block);
-            sea_pickle_prop.pickles = 4;
-            args.world.set_block_state(
-                args.position,
-                sea_pickle_prop.to_state_id(args.block),
-                BlockFlags::NOTIFY_LISTENERS,
-            );
-
-            BlockActionResult::Consume
+            if count < 2 {
+                z_span += 2;
+                z_off_set += 1;
+            } else {
+                z_span -= 2;
+                z_off_set -= 1;
+            }
+            count += 1;
         }
+
+        let mut sea_pickle_prop = SeaPickleProperties::from_state_id(args.state_id);
+        sea_pickle_prop.pickles = 4;
+        args.world.set_block_state(
+            args.position,
+            sea_pickle_prop.to_state_id(args.block),
+            BlockFlags::NOTIFY_LISTENERS,
+        );
     }
 
     fn on_place(&self, args: OnPlaceArgs<'_>) -> BlockStateId {
