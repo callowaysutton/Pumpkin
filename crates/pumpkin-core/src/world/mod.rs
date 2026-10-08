@@ -5202,11 +5202,15 @@ impl World {
                     .portal_poi
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if villager_poi::profession_for_block(old_block).is_some() {
+                if villager_poi::profession_for_block(old_block).is_some()
+                    || old_block.id == Block::LODESTONE.id
+                {
                     poi.remove(position);
                 }
                 if let Some(poi_type) = villager_poi::poi_type_for_block(new_block) {
                     poi.add_with_free_tickets(*position, poi_type, 1);
+                } else if new_block.id == Block::LODESTONE.id {
+                    poi.add(*position, pumpkin_world::poi::POI_TYPE_LODESTONE);
                 }
             }
         }
@@ -5490,6 +5494,16 @@ impl World {
     const fn is_within_build_height(&self, position: &BlockPos) -> bool {
         position.0.y >= self.dimension.min_y
             && position.0.y < self.dimension.min_y + self.dimension.height
+    }
+
+    /// Mirrors vanilla `Level#isInWorldBounds`.
+    #[must_use]
+    pub const fn is_in_world_bounds(&self, position: &BlockPos) -> bool {
+        self.is_within_build_height(position)
+            && position.0.x >= -30_000_000
+            && position.0.z >= -30_000_000
+            && position.0.x < 30_000_000
+            && position.0.z < 30_000_000
     }
 
     pub fn set_block_light_level(&self, position: &BlockPos, light_level: u8) {
