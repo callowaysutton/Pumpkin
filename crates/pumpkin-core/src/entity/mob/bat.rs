@@ -228,6 +228,10 @@ impl Mob for BatEntity {
         &self.mob_entity
     }
 
+    fn is_ignoring_block_triggers(&self) -> bool {
+        true
+    }
+
     fn mob_tick(&self, _caller: &dyn EntityBase) {
         let entity = &self.mob_entity.living_entity.entity;
         let block_pos = entity.block_pos.load();

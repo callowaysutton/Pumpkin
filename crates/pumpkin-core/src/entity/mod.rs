@@ -341,6 +341,12 @@ pub trait EntityBase: Send + Sync + std::any::Any {
         false
     }
 
+    /// Vanilla `Entity#isIgnoringBlockTriggers`: entities such as bats, markers and
+    /// displays do not trigger tripwires or pressure plates.
+    fn is_ignoring_block_triggers(&self) -> bool {
+        false
+    }
+
     fn is_collidable(&self, _entity: Option<Box<dyn EntityBase>>) -> bool {
         false
     }

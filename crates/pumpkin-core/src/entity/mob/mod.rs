@@ -851,6 +851,11 @@ pub trait Mob: EntityBase + Send + Sync {
         75.0
     }
 
+    /// Vanilla `Entity#isIgnoringBlockTriggers`.
+    fn is_ignoring_block_triggers(&self) -> bool {
+        false
+    }
+
     fn get_mob_entity(&self) -> &MobEntity;
 
     fn mob_bedrock_identifier(&self) -> Option<&'static str> {
@@ -1423,6 +1428,10 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
         mob_entity.living_entity.tick(caller, server);
         self.post_tick();
+    }
+
+    fn is_ignoring_block_triggers(&self) -> bool {
+        Mob::is_ignoring_block_triggers(self)
     }
 
     fn is_collidable(&self, _entity: Option<Box<dyn EntityBase>>) -> bool {
