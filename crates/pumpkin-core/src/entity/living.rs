@@ -953,6 +953,14 @@ impl LivingEntity {
 
     #[expect(clippy::too_many_lines)]
     pub fn add_effect(&self, effect: Effect) {
+        // Vanilla `LivingEntity#canBeAffected`: some mobs are immune to specific effects.
+        if !self
+            .get_mob()
+            .is_none_or(|mob| mob.can_be_affected(&effect))
+        {
+            return;
+        }
+
         let mut effect_event =
             crate::plugin::api::events::entity::entity_potion_effect::EntityPotionEffectEvent::new(
                 self.entity.entity_id,

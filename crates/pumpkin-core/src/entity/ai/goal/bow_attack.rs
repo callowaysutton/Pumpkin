@@ -68,6 +68,14 @@ impl BowAttackGoal {
         Self::main_hand_item(mob).item.id == Item::BOW.id
     }
 
+    /// Vanilla `AbstractSkeleton#reassessWeaponGoal`: the bow cooldown depends on difficulty.
+    fn resolve_attack_interval(&self, mob: &dyn Mob) -> i32 {
+        let hard = mob.get_entity().world.load().level_info.load().difficulty
+            == pumpkin_util::Difficulty::Hard;
+        mob.bow_attack_interval(hard)
+            .unwrap_or(self.attack_interval)
+    }
+
     fn stop_drawing(&mut self, mob: &dyn Mob) {
         if self.drawing {
             mob.get_mob_entity().living_entity.clear_active_hand();
@@ -92,6 +100,9 @@ impl BowAttackGoal {
             &bow_item,
             ArrowPickup::Disallowed,
         );
+
+        // Vanilla `AbstractSkeleton#getArrow` gives the mob a chance to decorate the arrow.
+        mob.modify_fired_arrow(&arrow);
 
         // Vanilla scales base damage with power and world difficulty
         let difficulty = world.level_info.load().difficulty as i32;
@@ -252,7 +263,7 @@ impl Goal for BowAttackGoal {
                 if self.draw_ticks >= Self::DRAW_TIME {
                     self.stop_drawing(mob);
                     Self::shoot(mob, &target);
-                    self.attack_time = self.attack_interval;
+                    self.attack_time = self.resolve_attack_interval(mob);
                 }
             }
         } else {
