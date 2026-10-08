@@ -2,7 +2,6 @@ use crate::entity::mob::Mob;
 use std::{any::TypeId, ops::BitOr, ptr};
 
 pub mod active_target;
-pub mod ambient_stand;
 pub mod avoid_entity;
 pub mod beg;
 pub mod blaze_attack;
@@ -37,6 +36,7 @@ pub mod owner_hurt_target;
 pub mod pathfind_to_raid;
 pub mod pick_up_block;
 pub mod place_block;
+pub mod random_stand;
 pub mod ranged_attack;
 pub mod ranged_crossbow_attack;
 pub mod reset_universal_anger;
