@@ -22,8 +22,9 @@ const HEADER_SIZE: usize = SECTOR_SIZE * 2; // Location table + timestamp table
 /// Compression type for MCA format
 const COMPRESSION_ZLIB: u8 = 2;
 
-// Data version for 1.21
-const DATA_VERSION: i32 = 3955;
+// Data version for the current target version (vanilla writes the running
+// version's data version into the POI/section storage).
+const DATA_VERSION: i32 = pumpkin_util::version::WORLD_DATA_VERSION;
 
 /// A single Point of Interest entry (serializable)
 #[derive(Debug, Clone, Serialize, Deserialize)]

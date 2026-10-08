@@ -1,3 +1,12 @@
+/// The vanilla world data version (`SharedConstants.WORLD_VERSION`) written to
+/// `level.dat` (`DataVersion`) and to every chunk (`DataVersion`).
+///
+/// Vanilla rejects a world whose stored data version is newer than the running
+/// server's, so this must track the Minecraft version Pumpkin targets.
+///
+/// 26.3: 5023 (26.2 was 4903).
+pub const WORLD_DATA_VERSION: i32 = 5023;
+
 /// Represents a specific version of the Minecraft Java Edition protocol.
 ///
 /// Each variant corresponds to a released client version and its associated
