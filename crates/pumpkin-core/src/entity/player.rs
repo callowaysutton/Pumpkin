@@ -1679,6 +1679,24 @@ impl Player {
         }
     }
 
+    /// Maps an equipment slot to the matching `PlayerInventory` slot index.
+    ///
+    /// Returns `None` for the Body/Saddle slots, which players never use.
+    #[must_use]
+    pub fn get_equipment_slot_index(&self, slot: &EquipmentSlot) -> Option<usize> {
+        Some(match slot {
+            EquipmentSlot::MainHand(_) => self.inventory.get_selected_slot() as usize,
+            EquipmentSlot::OffHand(_) => PlayerInventory::OFF_HAND_SLOT, // 40
+            EquipmentSlot::Feet(_) => 36,
+            EquipmentSlot::Legs(_) => 37,
+            EquipmentSlot::Chest(_) => 38,
+            EquipmentSlot::Head(_) => 39,
+            // Players do not have Body or Saddle equipment slots;
+            // these are only used by non-player entities (e.g. horses).
+            EquipmentSlot::Body(_) | EquipmentSlot::Saddle(_) => return None,
+        })
+    }
+
     /// Applies `amount` durability damage to the item in `slot`.
     /// Broadcasts an [`EntityStatus`] break event and syncs the slot if the item is destroyed.
     pub fn damage_item_in_slot(&self, slot: &EquipmentSlot, amount: i32) -> bool {
@@ -1689,17 +1707,8 @@ impl Player {
             return false;
         }
 
-        // Direct PlayerInventory slot indices (matches build_equipment_slots).
-        let slot_index: usize = match slot {
-            EquipmentSlot::MainHand(_) => self.inventory.get_selected_slot() as usize,
-            EquipmentSlot::OffHand(_) => PlayerInventory::OFF_HAND_SLOT, // 40
-            EquipmentSlot::Feet(_) => 36,
-            EquipmentSlot::Legs(_) => 37,
-            EquipmentSlot::Chest(_) => 38,
-            EquipmentSlot::Head(_) => 39,
-            // Players do not have Body or Saddle equipment slots;
-            // these are only used by non-player entities (e.g. horses).
-            EquipmentSlot::Body(_) | EquipmentSlot::Saddle(_) => return false,
+        let Some(slot_index) = self.get_equipment_slot_index(slot) else {
+            return false;
         };
 
         let mut stack = self.inventory.get_slot(slot_index);
@@ -2202,6 +2211,17 @@ impl Player {
 
     pub fn is_flying(&self) -> bool {
         self.abilities.try_lock().is_ok_and(|a| a.flying)
+    }
+
+    /// Whether the player is able to start gliding right now (has a working
+    /// glider equipped, is airborne, not a passenger, not levitating, not in
+    /// creative flight and not in a liquid).
+    ///
+    /// Matches vanilla `Player.canGlide` combined with the liquid check from
+    /// `Player.tryToStartFallFlying`.
+    #[must_use]
+    pub fn can_start_gliding(&self) -> bool {
+        !self.living_entity.entity.is_in_liquid() && self.living_entity.can_glide(self)
     }
 
     pub fn set_sprinting(&self, is_sprinting: bool) {

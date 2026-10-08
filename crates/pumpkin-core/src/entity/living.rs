@@ -42,11 +42,12 @@ use pumpkin_data::data_component_impl::Operation;
 use pumpkin_data::data_component_impl::food::{ConsumableImpl, ConsumeEffect};
 use pumpkin_data::data_component_impl::{
     AttributeModifiersImpl, BlocksAttacksImpl, DeathProtectionImpl, EnchantmentsImpl,
-    EquipmentSlot, EquippableImpl, FoodImpl,
+    EquipmentSlot, EquippableImpl, FoodImpl, GliderImpl,
 };
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
 use pumpkin_data::fluid::Fluid;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::game_rules::{GameRule, GameRuleValue};
 use pumpkin_data::item_stack::{DamageResult, ItemStack};
 use pumpkin_data::sound::SoundCategory;
@@ -1419,9 +1420,10 @@ impl LivingEntity {
             && self.entity.entity_type != &EntityType::STRIDER
         {
             self.travel_in_fluid(caller, touching_water);
+        } else if self.entity.is_fall_flying() {
+            self.update_fall_flying(caller);
+            self.travel_fall_flying(caller);
         } else {
-            // TODO: Gliding
-
             self.travel_in_air(caller);
         }
 
@@ -1501,6 +1503,222 @@ impl LivingEntity {
         velo.z *= friction;
 
         self.entity.velocity.store(velo);
+    }
+
+    /// Whether the given item stack in the given slot can be used to glide.
+    ///
+    /// Matches vanilla `LivingEntity.canGlideUsing`.
+    #[must_use]
+    pub fn can_glide_using(item_stack: &ItemStack, slot: &EquipmentSlot) -> bool {
+        if item_stack.get_data_component::<GliderImpl>().is_none() {
+            return false;
+        }
+
+        item_stack
+            .get_data_component::<EquippableImpl>()
+            .is_some_and(|equippable| equippable.slot == slot)
+            && !item_stack.next_damage_will_break()
+    }
+
+    /// Whether this entity is currently able to glide (has a working glider
+    /// equipped, is airborne, is not a passenger and has no levitation).
+    ///
+    /// Matches vanilla `LivingEntity.canGlide`.
+    #[must_use]
+    pub fn can_glide(&self, caller: &dyn EntityBase) -> bool {
+        if self.entity.on_ground.load(Relaxed)
+            || caller.is_passenger()
+            || self.has_effect(&StatusEffect::LEVITATION)
+            || caller
+                .get_player()
+                .is_some_and(super::player::Player::is_flying)
+        {
+            return false;
+        }
+
+        Self::equipment_slots_iter()
+            .any(|slot| Self::can_glide_using(&self.get_equipment_item(caller, slot), slot))
+    }
+
+    /// Iterates the equipment slots that can hold a glider.
+    /// Vanilla scans every `EquipmentSlot`, but only chest/head/legs/feet/hands
+    /// can ever carry a glider component, so the Body/Saddle slots are skipped.
+    fn equipment_slots_iter() -> impl Iterator<Item = &'static EquipmentSlot> {
+        [
+            &EquipmentSlot::CHEST,
+            &EquipmentSlot::HEAD,
+            &EquipmentSlot::LEGS,
+            &EquipmentSlot::FEET,
+            &EquipmentSlot::MAIN_HAND,
+            &EquipmentSlot::OFF_HAND,
+        ]
+        .into_iter()
+    }
+
+    /// Returns the item equipped in the given slot, resolving through the
+    /// player inventory when the caller is a player.
+    #[must_use]
+    pub fn get_equipment_item(&self, caller: &dyn EntityBase, slot: &EquipmentSlot) -> ItemStack {
+        if let Some(player) = caller.get_player() {
+            return player.get_equipment_slot_index(slot).map_or_else(
+                || ItemStack::EMPTY.clone(),
+                |i| player.inventory.get_slot(i),
+            );
+        }
+
+        let equipment = self
+            .entity_equipment
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        equipment.get(slot)
+    }
+
+    /// Matches vanilla `Entity.checkFallDistanceAccumulation`.
+    fn check_fall_distance_accumulation(&self) {
+        if self.entity.velocity.load().y > -0.5 && self.fall_distance.load() > 1.0 {
+            self.fall_distance.store(1.0);
+        }
+    }
+
+    /// Per-tick fall-flying upkeep: verifies the glider is still valid and
+    /// damages it every twenty ticks while emitting the glide game event.
+    ///
+    /// Matches vanilla `LivingEntity.updateFallFlying`. Durability damage is
+    /// only applied to players, since only they can carry a glider in Pumpkin.
+    fn update_fall_flying(&self, caller: &dyn EntityBase) {
+        self.check_fall_distance_accumulation();
+
+        if !self.can_glide(caller) {
+            self.stop_fall_flying();
+            return;
+        }
+
+        let ticks = self.entity.fall_fly_ticks.load(Relaxed) + 1;
+        if ticks % 10 != 0 {
+            return;
+        }
+
+        let interval = ticks / 10;
+        if interval % 2 == 0 {
+            let slots: Vec<EquipmentSlot> = Self::equipment_slots_iter()
+                .filter(|slot| Self::can_glide_using(&self.get_equipment_item(caller, slot), slot))
+                .cloned()
+                .collect();
+            if !slots.is_empty() {
+                let idx = rand::rng().random_range(0..slots.len());
+                Self::damage_glider_slot(caller, &slots[idx]);
+            }
+        }
+
+        self.entity
+            .world
+            .load()
+            .emit_game_event(GameEvent::ElytraGlide.name(), self.entity.pos.load());
+    }
+
+    /// Damages the glider in the given slot by one point.
+    fn damage_glider_slot(caller: &dyn EntityBase, slot: &EquipmentSlot) {
+        if let Some(player) = caller.get_player() {
+            player.damage_item_in_slot(slot, 1);
+        }
+    }
+
+    fn travel_fall_flying(&self, caller: &dyn EntityBase) {
+        if self.climbing.load(Relaxed) {
+            self.travel_in_air(caller);
+            self.stop_fall_flying();
+            return;
+        }
+
+        let last_movement = self.entity.velocity.load();
+        let last_speed = last_movement.horizontal_length();
+
+        self.entity
+            .velocity
+            .store(self.update_fall_flying_movement(caller, last_movement));
+
+        self.entity.move_entity(caller, self.entity.velocity.load());
+
+        let new_speed = self.entity.velocity.load().horizontal_length();
+        self.handle_fall_flying_collisions(caller, last_speed, new_speed);
+    }
+
+    /// Matches vanilla `LivingEntity.stopFallFlying` (forces the shared flag to
+    /// false so spectators/clients see the change).
+    fn stop_fall_flying(&self) {
+        self.entity.set_fall_flying(false);
+    }
+
+    /// Matches vanilla `LivingEntity.updateFallFlyingMovement`.
+    fn update_fall_flying_movement(
+        &self,
+        caller: &dyn EntityBase,
+        movement: Vector3<f64>,
+    ) -> Vector3<f64> {
+        let rotation = self.entity.rotation();
+        let look_angle = Vector3::new(
+            f64::from(rotation.x),
+            f64::from(rotation.y),
+            f64::from(rotation.z),
+        );
+        let lean_angle = f64::from(self.entity.pitch.load()).to_radians();
+        let look_hor_length = look_angle.x.hypot(look_angle.z);
+        let move_hor_length = movement.horizontal_length();
+        let gravity = self.get_effective_gravity(caller);
+        let lift_force = lean_angle.cos().powi(2);
+
+        let mut movement = movement.add(&Vector3::new(
+            0.0,
+            gravity * (-1.0 + lift_force * 0.75),
+            0.0,
+        ));
+
+        if movement.y < 0.0 && look_hor_length > 0.0 {
+            let convert = movement.y * -0.1 * lift_force;
+            movement = movement.add(&Vector3::new(
+                look_angle.x * convert / look_hor_length,
+                convert,
+                look_angle.z * convert / look_hor_length,
+            ));
+        }
+
+        if lean_angle < 0.0 && look_hor_length > 0.0 {
+            let convert = move_hor_length * -lean_angle.sin() * 0.04;
+            movement = movement.add(&Vector3::new(
+                -look_angle.x * convert / look_hor_length,
+                convert * 3.2,
+                -look_angle.z * convert / look_hor_length,
+            ));
+        }
+
+        if look_hor_length > 0.0 {
+            movement = movement.add(&Vector3::new(
+                (look_angle.x / look_hor_length * move_hor_length - movement.x) * 0.1,
+                0.0,
+                (look_angle.z / look_hor_length * move_hor_length - movement.z) * 0.1,
+            ));
+        }
+
+        movement.multiply(0.99, 0.98, 0.99)
+    }
+
+    /// Matches vanilla `LivingEntity.handleFallFlyingCollisions`.
+    fn handle_fall_flying_collisions(
+        &self,
+        caller: &dyn EntityBase,
+        move_hor_length: f64,
+        new_move_hor_length: f64,
+    ) {
+        if !self.entity.horizontal_collision.load(SeqCst) {
+            return;
+        }
+
+        let diff = move_hor_length - new_move_hor_length;
+        let dmg = (diff * 10.0 - 3.0) as f32;
+        if dmg > 0.0 {
+            self.entity.play_sound(Self::get_fall_sound(dmg as i32));
+            self.damage(caller, dmg, DamageType::FLY_INTO_WALL);
+        }
     }
 
     fn travel_in_air(&self, caller: &dyn EntityBase) {
@@ -3366,6 +3584,12 @@ impl EntityBase for LivingEntity {
             // Client-authoritative players skip `travel`, so decay pushed velocity like
             // vanilla to prevent it accumulating and launching the player.
             self.apply_travel_friction();
+
+            // Vanilla runs glider upkeep (`LivingEntity.aiStep`) for players too, even
+            // though their movement itself is client-authoritative.
+            if self.entity.is_fall_flying() {
+                self.update_fall_flying(caller);
+            }
 
             let suffocating = self.entity.tick_block_collisions(caller);
             if suffocating {
