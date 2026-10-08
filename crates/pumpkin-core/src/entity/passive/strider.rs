@@ -247,7 +247,7 @@ impl MoveToTargetPos for StriderGoToLavaGoal {
 impl StriderGoToLavaGoal {
     fn not_in_lava(mob: &dyn Mob) -> bool {
         !mob.get_living_entity()
-            .is_some_and(|living| living.is_in_lava())
+            .is_some_and(super::super::living::LivingEntity::is_in_lava)
     }
 }
 
@@ -330,7 +330,7 @@ impl Mob for StriderEntity {
         let on_warm_strider = entity.get_vehicle().is_some_and(|vehicle| {
             vehicle
                 .cast_any()
-                .downcast_ref::<StriderEntity>()
+                .downcast_ref::<Self>()
                 .is_some_and(|strider| !strider.is_suffocating())
         });
         self.set_suffocating(!in_warm_blocks && !on_warm_strider);

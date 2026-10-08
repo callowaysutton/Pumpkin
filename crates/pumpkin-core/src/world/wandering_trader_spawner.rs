@@ -284,7 +284,7 @@ mod tests {
             75
         );
         assert_eq!(
-            (0 + SPAWN_CHANCE_INCREASE).clamp(MIN_SPAWN_CHANCE, MAX_SPAWN_CHANCE),
+            SPAWN_CHANCE_INCREASE.clamp(MIN_SPAWN_CHANCE, MAX_SPAWN_CHANCE),
             25
         );
     }

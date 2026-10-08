@@ -473,7 +473,7 @@ impl SulfurCubeTemptGoal {
     /// Vanilla predicate: babies follow `minecraft:sulfur_cube_food`, adults follow
     /// any swallowable item.
     fn is_tempt_item(&self, stack: &ItemStack) -> bool {
-        if stack.item_count <= 0 {
+        if stack.is_empty() {
             return false;
         }
         if self.sulfur_cube.is_baby() {

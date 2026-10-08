@@ -353,7 +353,7 @@ mod tests {
             .join("structure")
             .join("test_saving.nbt");
         assert!(file.exists());
-        assert!(std::fs::read(&file).map_or(false, |bytes| !bytes.starts_with(&[0x1F, 0x8B])));
+        assert!(std::fs::read(&file).is_ok_and(|bytes| !bytes.starts_with(&[0x1F, 0x8B])));
 
         // And it reloads through the world-generated scan path.
         let loaded = cache
