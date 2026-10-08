@@ -8,15 +8,19 @@ use pumpkin_data::{
     recipes::{CookingRecipeKind, get_cooking_recipe_with_ingredient},
 };
 use pumpkin_macros::pumpkin_block_from_tag;
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::tick::TickPriority;
+use pumpkin_world::world::BlockFlags;
 
 use crate::block::entities::campfire::CampfireBlockEntity;
 use crate::{
     block::{
         BlockBehaviour, BlockIsReplacing, GetStateForNeighborUpdateArgs, OnEntityCollisionArgs,
-        OnPlaceArgs, PathComputationType, PlacedArgs, UseWithItemArgs, registry::BlockActionResult,
+        OnPlaceArgs, OnProjectileHitArgs, PathComputationType, PlacedArgs, UseWithItemArgs,
+        registry::BlockActionResult,
     },
     entity::EntityBase,
+    world::World,
 };
 use std::sync::Arc;
 
@@ -150,7 +154,51 @@ impl BlockBehaviour for CampfireBlock {
         false
     }
 
-    // TODO: onProjectileHit
+    fn on_projectile_hit(&self, args: OnProjectileHitArgs<'_>) {
+        // Vanilla `CampfireBlock.onProjectileHit`: a burning projectile relights a
+        // doused campfire.
+        if !args.projectile.get_entity().is_on_fire() {
+            return;
+        }
+
+        if !projectile_may_interact(args.world, args.projectile, args.position) {
+            return;
+        }
+
+        let mut props = CampfireLikeProperties::from_state_id(args.state.id);
+        if props.lit || props.waterlogged {
+            return;
+        }
+
+        props.lit = true;
+        args.world.set_block_state(
+            args.position,
+            props.to_state_id(args.block),
+            BlockFlags::NOTIFY_ALL,
+        );
+    }
+}
+
+/// Vanilla `Projectile.mayInteract`: player-owned projectiles are allowed outside
+/// spawn protection, ownerless projectiles (or owners that vanished) are always
+/// allowed, and any other owner needs the `mobGriefing` game rule.
+fn projectile_may_interact(
+    world: &World,
+    projectile: &dyn EntityBase,
+    position: &BlockPos,
+) -> bool {
+    let Some(owner_id) = projectile.get_owner_id() else {
+        return true;
+    };
+    let Some(owner) = world.get_entity_by_id(owner_id) else {
+        return true;
+    };
+    owner.get_player().map_or_else(
+        || world.level_info.load().game_rules.mob_griefing,
+        // Vanilla also rejects positions outside the world border; Pumpkin has no
+        // world border logic yet, so only spawn protection applies here.
+        |player| !world.is_in_spawn_protection(player, position),
+    )
 }
 
 fn is_signal_fire_base_block(block: &Block) -> bool {
