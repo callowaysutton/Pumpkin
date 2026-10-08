@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::{Block, BlockDirection, BlockState};
 use pumpkin_nbt::compound::NbtCompound;
+use pumpkin_nbt::tag::NbtTag;
 use pumpkin_util::math::{boundingbox::BoundingBox, position::BlockPos, vector3::Vector3};
 
 use crate::world::{BlockFlags, World};
@@ -18,6 +19,8 @@ pub struct PistonBlockEntity {
     pub last_progress: AtomicCell<f32>,
     pub extending: bool,
     pub source: bool,
+    /// Vanilla `lastTicked`: the world game time of the last block entity tick.
+    pub last_ticked: AtomicCell<i64>,
 }
 
 impl PistonBlockEntity {
@@ -211,6 +214,53 @@ const FACING: &str = "facing";
 const LAST_PROGRESS: &str = "progress";
 const EXTENDING: &str = "extending";
 const SOURCE: &str = "source";
+const BLOCK_STATE: &str = "blockState";
+const NAME: &str = "Name";
+const PROPERTIES: &str = "Properties";
+
+/// Writes a block state as a vanilla NBT block state (name plus properties).
+fn put_block_state(nbt: &mut NbtCompound, state: &'static BlockState) {
+    let block = Block::from_state_id(state.id);
+    let mut tag = NbtCompound::new();
+    tag.put_string(
+        NAME,
+        if block.name.starts_with("minecraft:") {
+            block.name.to_string()
+        } else {
+            format!("minecraft:{}", block.name)
+        },
+    );
+    if let Some(props) = block.properties(state.id) {
+        let props_vec = props.to_props();
+        if !props_vec.is_empty() {
+            let mut properties = NbtCompound::new();
+            for (key, value) in props_vec {
+                properties.put_string(key, value.to_string());
+            }
+            tag.put_compound(PROPERTIES, properties);
+        }
+    }
+    nbt.put_compound(BLOCK_STATE, tag);
+}
+
+fn block_state_from_nbt(nbt: &NbtCompound) -> Option<&'static BlockState> {
+    let tag = nbt.get_compound(BLOCK_STATE)?;
+    let block = Block::from_name(tag.get_string(NAME)?)?;
+    let properties = tag
+        .get_compound(PROPERTIES)
+        .map(|compound| {
+            compound
+                .child_tags
+                .iter()
+                .filter_map(|(key, value)| match value {
+                    NbtTag::String(string) => Some((key.as_ref(), &**string)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    block.state_from_properties(&properties)
+}
 
 impl BlockEntity for PistonBlockEntity {
     fn resource_location(&self) -> &'static str {
@@ -222,6 +272,13 @@ impl BlockEntity for PistonBlockEntity {
     }
 
     fn tick(&self, world: &Arc<World>) {
+        self.last_ticked.store(
+            world
+                .level_time
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .query_gametime(),
+        );
         let current_progress = self.current_progress.load();
         self.last_progress.store(current_progress);
         if current_progress >= 1.0 {
@@ -256,8 +313,7 @@ impl BlockEntity for PistonBlockEntity {
     where
         Self: Sized,
     {
-        // TODO
-        let pushed_block_state = Block::AIR.default_state;
+        let pushed_block_state = block_state_from_nbt(nbt).unwrap_or(Block::AIR.default_state);
         let facing = nbt.get_byte(FACING).unwrap_or(0);
         let last_progress = nbt.get_float(LAST_PROGRESS).unwrap_or(0.0);
         let extending = nbt.get_bool(EXTENDING).unwrap_or(false);
@@ -270,11 +326,12 @@ impl BlockEntity for PistonBlockEntity {
             last_progress: last_progress.into(),
             extending,
             source,
+            last_ticked: 0.into(),
         }
     }
 
     fn write_nbt(&self, nbt: &mut NbtCompound) {
-        // TODO: pushed_block_state
+        put_block_state(nbt, self.pushed_block_state);
         nbt.put_byte(FACING, self.facing.to_index() as i8);
         nbt.put_float(LAST_PROGRESS, self.last_progress.load());
         nbt.put_bool(EXTENDING, self.extending);
@@ -283,7 +340,7 @@ impl BlockEntity for PistonBlockEntity {
 
     fn chunk_data_nbt(&self) -> Option<NbtCompound> {
         let mut nbt = NbtCompound::new();
-        // TODO: pushed_block_state
+        put_block_state(&mut nbt, self.pushed_block_state);
         nbt.put_byte(FACING, self.facing.to_index() as i8);
         nbt.put_float(LAST_PROGRESS, self.last_progress.load());
         nbt.put_bool(EXTENDING, self.extending);

@@ -238,6 +238,7 @@ impl PistonBlock {
             last_progress: 0.0.into(),
             extending: false,
             source: true,
+            last_ticked: 0.into(),
         }));
 
         world.set_block_state(
@@ -250,30 +251,20 @@ impl PistonBlock {
         if sticky {
             let pull_pos = pos.offset_dir(dir.to_offset(), 2);
             let (block, state) = world.get_block_and_state(&pull_pos);
-            if data == 2 {
+            if r#type != 1
+                || state.is_air()
+                || !Self::is_movable(block, state, dir.opposite(), false, dir)
+                || (state.piston_behavior != PistonBehavior::Normal
+                    && block != &Block::PISTON
+                    && block != &Block::STICKY_PISTON)
+            {
                 world.set_block_state(
                     &extended_pos,
                     Block::AIR.default_state.id,
                     BlockFlags::NOTIFY_ALL,
                 );
             } else {
-                let is_air = state.is_air();
-                if !is_air
-                    && (Self::is_movable(block, state, dir, false, dir.opposite())
-                        || Self::is_movable(block, state, dir, false, dir))
-                    && (state.piston_behavior == PistonBehavior::Normal
-                        || block == &Block::PISTON
-                        || block == &Block::STICKY_PISTON)
-                {
-                    move_piston(world, dir, pos, false, sticky);
-                } else {
-                    // remove
-                    world.set_block_state(
-                        &extended_pos,
-                        Block::AIR.default_state.id,
-                        BlockFlags::NOTIFY_ALL,
-                    );
-                }
+                move_piston(world, dir, pos, false, sticky);
             }
         } else {
             // remove
@@ -348,11 +339,20 @@ pub fn try_move(world: &Arc<World>, _block: &Block, block_pos: &BlockPos) {
                 let Some(piston) = entity.as_any().downcast_ref::<PistonBlockEntity>() else {
                     return;
                 };
-                if piston.extending && piston.current_progress.load() < 0.5
-                // TODO: more stuff...
-                {
-                    // Piston reduced too quickly, if its a stick piston no blocks will be dragged
-                    r#type = 2;
+                if piston.extending {
+                    // Vanilla checks `getProgress(0.0F) < 0.5F` (the progress from
+                    // the previous tick) or that the piece was ticked this game time,
+                    // so a retract arriving during the extension animation sends the
+                    // "drop" event instead of a normal retract.
+                    let progress = piston.last_progress.load();
+                    let game_time = world
+                        .level_time
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .query_gametime();
+                    if progress < 0.5 || game_time == piston.last_ticked.load() {
+                        r#type = 2;
+                    }
                 }
             }
         }
@@ -431,6 +431,7 @@ fn move_piston(
                 last_progress: 0.0.into(),
                 extending: extend,
                 source: false,
+                last_ticked: 0.into(),
             }));
         }
         affected_block_states.push(block_state);
@@ -462,6 +463,7 @@ fn move_piston(
             last_progress: 0.0.into(),
             extending: true,
             source: true,
+            last_ticked: 0.into(),
         }));
     }
 
