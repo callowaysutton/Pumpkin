@@ -1223,6 +1223,11 @@ impl LivingEntity {
         self.entity.touching_water.load(Ordering::Relaxed)
     }
 
+    // Check if the entity is in lava
+    pub fn is_in_lava(&self) -> bool {
+        self.entity.touching_lava.load(Ordering::Relaxed)
+    }
+
     // Check if the entity is in powder snow
     pub fn is_in_powder_snow(&self) -> bool {
         self.entity.is_in_powder_snow.load(Ordering::Relaxed)
