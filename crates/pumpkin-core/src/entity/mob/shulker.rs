@@ -9,6 +9,7 @@ use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::java::client::play::CEntityPositionSync;
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 
@@ -59,6 +60,37 @@ pub struct ShulkerEntity {
 }
 
 impl ShulkerEntity {
+    /// Vanilla: `Shulker.getProgressDeltaAabb`.
+    #[must_use]
+    pub fn get_progress_delta_aabb(
+        size: f32,
+        direction: BlockDirection,
+        progress_from: f32,
+        progress_to: f32,
+        position: Vector3<f64>,
+    ) -> BoundingBox {
+        let size = f64::from(size);
+        let bounds_at_bottom_center = BoundingBox {
+            min: Vector3::new(-size * 0.5, 0.0, -size * 0.5),
+            max: Vector3::new(size * 0.5, size, size * 0.5),
+        };
+        let max_movement = f64::from(progress_from.max(progress_to));
+        let min_movement = f64::from(progress_from.min(progress_to));
+        let step = direction.to_offset();
+        bounds_at_bottom_center
+            .expand_towards(
+                f64::from(step.x) * max_movement * size,
+                f64::from(step.y) * max_movement * size,
+                f64::from(step.z) * max_movement * size,
+            )
+            .contract(
+                -f64::from(step.x) * (1.0 + min_movement) * size,
+                -f64::from(step.y) * (1.0 + min_movement) * size,
+                -f64::from(step.z) * (1.0 + min_movement) * size,
+            )
+            .shift(position)
+    }
+
     pub fn new(entity: Entity) -> Arc<Self> {
         let mob_entity = MobEntity::new(entity);
         let shulker = Self {
