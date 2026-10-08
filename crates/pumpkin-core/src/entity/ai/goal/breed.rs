@@ -101,6 +101,11 @@ impl BreedGoal {
 
         let parent_pos = entity.pos.load();
         let baby = from_type(entity.entity_type, parent_pos, &world, Uuid::new_v4());
+        // Vanilla Animal.spawnChildFromBreeding: the parent customizes the baby before it
+        // enters the world.
+        if let Some(ageable) = mob.as_ageable() {
+            ageable.on_child_from_breeding(&baby, Some(mate));
+        }
         baby.get_entity().set_age(-24000);
         let world_full = entity.world.load_full();
         world_full.spawn_entity(baby);

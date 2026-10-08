@@ -114,8 +114,8 @@ impl Goal for OcelotAttackGoal {
         if dist_sq <= f64::from(melee_radius_sq) && self.attack_time <= 0 {
             self.attack_time = 20;
             mob.get_mob_entity().living_entity.swing_hand();
-            mob.get_mob_entity()
-                .try_attack(mob.get_entity(), target.as_ref());
+            // `mob` instead of `mob.get_entity()` so `Mob::on_attack` fires on the hit below.
+            mob.get_mob_entity().try_attack(mob, target.as_ref());
         }
     }
 

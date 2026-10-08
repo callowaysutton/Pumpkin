@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use super::{Controls, Goal};
+use crate::entity::ai::goal::revenge::MobFilter;
 use crate::entity::ai::util::default_random_pos;
 use crate::entity::predicate::EntityPredicate;
 use crate::entity::{EntityBase, ai::pathfinder::NavigatorGoal, mob::Mob};
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::entity::{EntityType, MobCategory};
 use pumpkin_util::math::vector3::Vector3;
 
 const FAST_DISTANCE_SQ: f64 = 49.0;
@@ -13,12 +14,16 @@ const VERTICAL_RANGE: i32 = 7;
 
 pub struct AvoidEntityGoal {
     goal_control: Controls,
-    flee_type: &'static EntityType,
+    /// Vanilla `AvoidEntityGoal<T>.targetClass` as a single entity type.
+    flee_type: Option<&'static EntityType>,
+    /// Whole-Class target like vanilla's `Monster` interface; matches entity spawn category.
+    flee_category: Option<&'static MobCategory>,
     flee_distance: f64,
     slow_speed: f64,
     fast_speed: f64,
     target: Option<Arc<dyn EntityBase>>,
     flee_pos: Option<Vector3<f64>>,
+    gate: Option<MobFilter>,
 }
 
 impl AvoidEntityGoal {
@@ -31,13 +36,43 @@ impl AvoidEntityGoal {
     ) -> Self {
         Self {
             goal_control: Controls::MOVE,
-            flee_type,
+            flee_type: Some(flee_type),
+            flee_category: None,
             flee_distance,
             slow_speed,
             fast_speed,
             target: None,
             flee_pos: None,
+            gate: None,
         }
+    }
+
+    /// Avoids every entity of a whole category, like vanilla's `Monster` class target.
+    #[must_use]
+    pub fn avoids_category(
+        flee_category: &'static MobCategory,
+        flee_distance: f64,
+        slow_speed: f64,
+        fast_speed: f64,
+    ) -> Self {
+        Self {
+            goal_control: Controls::MOVE,
+            flee_type: None,
+            flee_category: Some(flee_category),
+            flee_distance,
+            slow_speed,
+            fast_speed,
+            target: None,
+            flee_pos: None,
+            gate: None,
+        }
+    }
+
+    /// Extra condition for starting and for continuing
+    #[must_use]
+    pub const fn gated_by(mut self, gate: MobFilter) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     fn find_threat(&self, mob: &dyn Mob) -> Option<Arc<dyn EntityBase>> {
@@ -45,15 +80,23 @@ impl AvoidEntityGoal {
         let pos = entity.pos.load();
         let world = entity.world.load();
 
-        if self.flee_type == &EntityType::PLAYER {
+        if self
+            .flee_type
+            .is_some_and(|flee_type| flee_type == &EntityType::PLAYER)
+        {
             world
                 .get_nearest_player(pos, self.flee_distance, |player| {
                     EntityPredicate::ExceptCreativeOrSpectator.test(player.get_entity())
                 })
                 .map(|p| p as Arc<dyn EntityBase>)
         } else {
-            world.get_nearest_entity(pos, self.flee_distance, Some(&[self.flee_type]), |entity| {
+            let entity_types: Option<&[&'static EntityType]> =
+                self.flee_type.as_ref().map(std::slice::from_ref);
+            world.get_nearest_entity(pos, self.flee_distance, entity_types, |entity| {
                 EntityPredicate::ExceptCreativeOrSpectator.test(entity.get_entity())
+                    && self
+                        .flee_category
+                        .is_none_or(|category| entity.get_entity().entity_type.category == category)
             })
         }
     }
@@ -61,6 +104,9 @@ impl AvoidEntityGoal {
 
 impl Goal for AvoidEntityGoal {
     fn can_start(&mut self, mob: &dyn Mob) -> bool {
+        if self.gate.is_some_and(|gate| !gate(mob)) {
+            return false;
+        }
         let Some(target) = self.find_threat(mob) else {
             return false;
         };
@@ -86,6 +132,9 @@ impl Goal for AvoidEntityGoal {
     }
 
     fn should_continue(&mut self, mob: &dyn Mob) -> bool {
+        if self.gate.is_some_and(|gate| !gate(mob)) {
+            return false;
+        }
         !mob.is_navigator_idle()
     }
 

@@ -656,6 +656,11 @@ impl MobEntity {
             self.living_entity
                 .last_attack_time
                 .store(self.living_entity.entity.age.load(Relaxed), Relaxed);
+            // Vanilla Mob.doHurtTarget: the hooks run on the attacker when the hit lands,
+            // e.g. Panda.doHurtTarget (didBite flag) and CaveSpider poison.
+            if let Some(mob) = caller.get_mob() {
+                mob.on_attack(target);
+            }
         }
     }
 
@@ -1009,6 +1014,12 @@ pub trait Mob: EntityBase + Send + Sync {
     }
 
     fn as_iron_golem(&self) -> Option<&crate::entity::passive::iron_golem::IronGolemEntity> {
+        None
+    }
+
+    /// Must return `Some(self)` for the panda entity. Used by the panda goal filters and
+    /// controls.
+    fn as_panda(&self) -> Option<&crate::entity::passive::panda::PandaEntity> {
         None
     }
 

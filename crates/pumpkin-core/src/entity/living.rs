@@ -1799,7 +1799,9 @@ impl LivingEntity {
         }
     }
 
-    fn jump(&self) {
+    /// Vanilla `LivingEntity.jumpFromGround`: a one-shot jump that leaves nothing set for the
+    /// following ticks, unlike the `jumping` flag which the movement loop re-fires.
+    pub fn jump(&self) {
         let jump = self.get_jump_velocity(1.0);
 
         if jump <= 1.0e-5 {
