@@ -1,5 +1,4 @@
 mod chest;
-mod container;
 mod furnace;
 mod hopper;
 mod rideable;
