@@ -16,7 +16,8 @@ use crate::entity::{
     ai::goal::{
         active_target::ActiveTargetGoal, avoid_entity::AvoidEntityGoal, breed::BreedGoal,
         escape_danger::EscapeDangerGoal, follow_parent::FollowParentGoal,
-        look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal, swim::SwimGoal,
+        leap_at_target::LeapAtTargetGoal, look_around::RandomLookAroundGoal,
+        look_at_entity::LookAtEntityGoal, ocelot_attack::OcelotAttackGoal, swim::SwimGoal,
         tempt::TemptGoal, wander_around::WanderAroundGoal,
     },
     mob::{Mob, MobEntity},
@@ -65,6 +66,10 @@ impl OcelotEntity {
                 4,
                 Box::new(AvoidEntityGoal::new(&EntityType::PLAYER, 16.0, 0.8, 1.33)),
             );
+            // Goal 7: LeapAtTargetGoal
+            goal_selector.add_goal(7, Box::new(LeapAtTargetGoal::new(0.3)));
+            // Goal 8: OcelotAttackGoal
+            goal_selector.add_goal(8, Box::new(OcelotAttackGoal::new()));
             // Goal 9: BreedGoal
             goal_selector.add_goal(9, BreedGoal::new(0.8));
             // Goal 9: FollowParentGoal
