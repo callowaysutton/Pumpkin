@@ -137,6 +137,50 @@ impl BoundingBox {
         }
     }
 
+    /// Contracts this bounding box on each axis by the given amount.
+    ///
+    /// For each axis, a negative value shrinks the minimum boundary and a
+    /// positive value shrinks the maximum boundary. Zero leaves that axis
+    /// unchanged.
+    ///
+    /// # Arguments
+    /// * `x` – Amount to contract on the X axis.
+    /// * `y` – Amount to contract on the Y axis.
+    /// * `z` – Amount to contract on the Z axis.
+    #[must_use]
+    pub fn contract(&self, x: f64, y: f64, z: f64) -> Self {
+        let mut min_x = self.min.x;
+        let mut min_y = self.min.y;
+        let mut min_z = self.min.z;
+
+        let mut max_x = self.max.x;
+        let mut max_y = self.max.y;
+        let mut max_z = self.max.z;
+
+        if x < 0.0 {
+            min_x -= x;
+        } else if x > 0.0 {
+            max_x -= x;
+        }
+
+        if y < 0.0 {
+            min_y -= y;
+        } else if y > 0.0 {
+            max_y -= y;
+        }
+
+        if z < 0.0 {
+            min_z -= z;
+        } else if z > 0.0 {
+            max_z -= z;
+        }
+
+        Self {
+            min: Vector3::new(min_x, min_y, min_z),
+            max: Vector3::new(max_x, max_y, max_z),
+        }
+    }
+
     /// Expands this box uniformly along all axes.
     ///
     /// # Arguments

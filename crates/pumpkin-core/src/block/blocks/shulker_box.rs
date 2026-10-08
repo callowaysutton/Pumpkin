@@ -11,7 +11,10 @@ use crate::block::{
 };
 
 use crate::block::entities::shulker_box::ShulkerBoxBlockEntity;
+use crate::entity::mob::shulker::ShulkerEntity;
+use pumpkin_data::BlockState;
 use pumpkin_data::BlockStateId;
+use pumpkin_data::FacingExt;
 use pumpkin_data::translation;
 use pumpkin_inventory::Inventory;
 use pumpkin_inventory::generic_container_screen_handler::create_generic_9x3;
@@ -20,7 +23,10 @@ use pumpkin_inventory::screen_handler::{
     InventoryPlayer, ScreenHandlerFactory, SharedScreenHandler,
 };
 use pumpkin_macros::pumpkin_block_from_tag;
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::text::TextComponent;
+
+use crate::world::World;
 
 struct ShulkerBoxScreenFactory(Arc<dyn Inventory>);
 
@@ -59,7 +65,6 @@ impl BlockBehaviour for ShulkerBoxBlock {
 
     fn on_synced_block_event(&self, args: OnSyncedBlockEventArgs<'_>) -> bool {
         // On the server, we don't need the Animation steps for now, because the client is responsible for that.
-        // TODO: Do not open the shulker box when it is currently closing
         args.r#type == Self::OPEN_ANIMATION_EVENT_TYPE
     }
 
@@ -71,20 +76,37 @@ impl BlockBehaviour for ShulkerBoxBlock {
     }
 
     fn normal_use(&self, args: NormalUseArgs<'_>) -> BlockActionResult {
-        if let Some(factory) = self.get_screen_handler_factory(GetScreenHandlerFactoryArgs {
-            server: args.server,
-            world: args.world,
-            block: args.block,
-            position: args.position,
-            player: args.player,
-        }) {
+        // Vanilla `ShulkerBoxBlock.useWithoutItem` only opens the box when `canOpen` allows it.
+        let can_open = args
+            .world
+            .get_block_entity(args.position)
+            .as_ref()
+            .and_then(|entity| entity.as_any().downcast_ref::<ShulkerBoxBlockEntity>())
+            .is_some_and(|block_entity| {
+                Self::can_open(
+                    args.world.get_block_state(args.position),
+                    args.world,
+                    args.position,
+                    block_entity,
+                )
+            });
+
+        if can_open
+            && let Some(factory) = self.get_screen_handler_factory(GetScreenHandlerFactoryArgs {
+                server: args.server,
+                world: args.world,
+                block: args.block,
+                position: args.position,
+                player: args.player,
+            })
+        {
+            args.player
+                .open_handled_screen(factory.as_ref(), Some(*args.position));
             args.player.increment_stat(
                 pumpkin_data::statistic::StatisticCategory::Custom,
                 pumpkin_data::statistic::CustomStatistic::OpenShulkerBox as i32,
                 1,
             );
-            args.player
-                .open_handled_screen(factory.as_ref(), Some(*args.position));
         }
 
         BlockActionResult::Success
@@ -106,4 +128,35 @@ impl BlockBehaviour for ShulkerBoxBlock {
 
 impl ShulkerBoxBlock {
     pub const OPEN_ANIMATION_EVENT_TYPE: u8 = 1;
+
+    /// Vanilla: `ShulkerBoxBlock.canOpen`.
+    fn can_open(
+        state: &BlockState,
+        world: &Arc<World>,
+        position: &BlockPos,
+        block_entity: &ShulkerBoxBlockEntity,
+    ) -> bool {
+        // Vanilla allows re-opening while the box is animating (OPENING/OPENED/CLOSING);
+        // without a server-side animation, any viewer counts as "not closed".
+        if block_entity.viewers.get_viewer_count() != 0 {
+            return true;
+        }
+
+        let props = EndRodLikeProperties::from_state_id(state.id);
+        // Vanilla: Shulker.getProgressDeltaAabb(1.0F, FACING, 0.0F, 0.5F, Vec3.atBottomCenterOf(pos)).deflate(1.0E-6)
+        let lid_box = ShulkerEntity::get_progress_delta_aabb(
+            1.0,
+            props.facing.to_block_direction(),
+            0.0,
+            0.5,
+            position.to_f64(),
+        )
+        .contract_all(1.0E-6);
+        world.is_space_empty(lid_box)
+            // Vanilla `noCollision` also fails when a collidable entity is in the lid's way.
+            && !world
+                .get_entities_at_box(&lid_box.expand_all(1.0E-7))
+                .iter()
+                .any(|entity| !entity.is_spectator() && entity.is_collidable(None))
+    }
 }
