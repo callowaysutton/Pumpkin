@@ -1679,10 +1679,10 @@ impl LivingEntity {
     fn make_move(&self, caller: &dyn EntityBase) {
         self.entity.move_entity(caller, self.entity.velocity.load());
 
-        self.check_climbing();
-    }
+        self.check_climbing(caller);
+    },
 
-    fn check_climbing(&self) {
+    fn check_climbing(&self, caller: &dyn EntityBase) {
         // If spectator: return false
 
         // TODO
@@ -1732,7 +1732,7 @@ impl LivingEntity {
         //     }
         // }
 
-        self.climbing.store(false, Relaxed);
+        self.climbing.store(caller.on_climbable(), Relaxed);
 
         if self.entity.on_ground.load(SeqCst) {
             self.climbing_pos.store(None);
