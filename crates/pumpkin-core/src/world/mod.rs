@@ -5202,11 +5202,24 @@ impl World {
                     .portal_poi
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if villager_poi::profession_for_block(old_block).is_some() {
+                if villager_poi::profession_for_block(old_block).is_some()
+                    || villager_poi::village_poi_type_for_block(
+                        old_block,
+                        BlockState::from_id(replaced_block_state_id),
+                    )
+                    .is_some()
+                {
                     poi.remove(position);
                 }
                 if let Some(poi_type) = villager_poi::poi_type_for_block(new_block) {
                     poi.add_with_free_tickets(*position, poi_type, 1);
+                } else if let Some((poi_type, free_tickets)) =
+                    villager_poi::village_poi_type_for_block(
+                        new_block,
+                        BlockState::from_id(block_state_id),
+                    )
+                {
+                    poi.add_with_free_tickets(*position, poi_type, free_tickets);
                 }
             }
         }
@@ -5437,6 +5450,50 @@ impl World {
     #[must_use]
     pub fn villager_activity(&self, pos: &BlockPos, baby: bool) -> Activity {
         self.environment_attributes().get_value_activity(baby, pos)
+    }
+
+    /// Vanilla `ServerLevel.isCloseToVillage`: whether any village POI section lies within
+    /// `section_distance` sections (chebyshev, 16-block sections) of `pos`. The vanilla distance
+    /// tracker caps out at 6 sections.
+    #[must_use]
+    pub fn is_close_to_village(&self, pos: &BlockPos, section_distance: i32) -> bool {
+        section_distance <= 6 && self.sections_to_village(pos) <= section_distance
+    }
+
+    /// Vanilla `ServerLevel.isVillage`.
+    #[must_use]
+    pub fn is_village(&self, pos: &BlockPos) -> bool {
+        self.is_close_to_village(pos, 1)
+    }
+
+    /// Equivalent of vanilla `PoiManager.sectionsToVillage`: the chebyshev distance in sections to
+    /// the nearest section holding a `minecraft:village` POI, saturating at the vanilla cap of 6.
+    ///
+    /// This is checked from the entity tick thread, so it only consults POI regions already in
+    /// memory; a region holding a village POI the server placed is always loaded because placing
+    /// the block went through the POI storage.
+    #[must_use]
+    pub fn sections_to_village(&self, pos: &BlockPos) -> i32 {
+        self.portal_poi
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .min_loaded_section_distance_matching(*pos, 6, villager_poi::is_village_poi_type)
+            .min(6)
+    }
+
+    /// Vanilla `PoiManager.find` restricted to `minecraft:village` POIs.
+    #[must_use]
+    pub fn find_village_poi(
+        &self,
+        pos: &BlockPos,
+        radius: i32,
+        filter: impl Fn(&BlockPos) -> bool,
+    ) -> Option<BlockPos> {
+        self.portal_poi
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .find_in_range(*pos, radius, villager_poi::is_village_poi_type, filter)
+            .map(|(pos, _)| pos)
     }
 
     pub fn get_raw_brightness(&self, pos: &BlockPos, sky_darken: u8) -> u8 {

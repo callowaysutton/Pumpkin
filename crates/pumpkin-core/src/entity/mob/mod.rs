@@ -810,6 +810,11 @@ pub trait Mob: EntityBase + Send + Sync {
             .is_idle()
     }
 
+    /// Vanilla `Zombie.canBreakDoors`, used by `MoveThroughVillageGoal` while pathing.
+    fn can_break_doors(&self) -> bool {
+        false
+    }
+
     fn has_line_of_sight(&self, target: &crate::entity::Entity) -> bool {
         let mob_entity = self.get_mob_entity();
         mob_entity

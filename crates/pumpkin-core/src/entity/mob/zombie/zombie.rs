@@ -34,6 +34,10 @@ impl Mob for ZombieEntity {
         self.entity.spawn_as_baby()
     }
 
+    fn can_break_doors(&self) -> bool {
+        self.entity.can_break_doors()
+    }
+
     fn populate_default_equipment_slots(
         &self,
         world: &Arc<World>,
