@@ -4,7 +4,7 @@ use crate::block::entities::BlockEntity;
 use crate::block::entities::chest::ChestBlockEntity;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::{ChestLikeProperties, ChestType, HorizontalFacing};
-use pumpkin_data::entity::{EntityPose, EntityType};
+use pumpkin_data::entity::EntityPose;
 use pumpkin_data::loot_table::get_loot_table;
 use pumpkin_data::{Block, BlockDirection, translation};
 use pumpkin_inventory::Inventory;
@@ -136,12 +136,12 @@ fn get_chest_comparator_output(args: &GetComparatorOutputArgs<'_>) -> Option<u8>
     };
 
     // Vanilla passes `ignoreBeingBlocked = false`, so a blocked half reads zero.
-    if is_chest_blocked(args.world, args.position) {
+    if is_chest_blocked_at(args.world, args.position) {
         return Some(0);
     }
 
     if let Some(direction) = connected_towards
-        && is_chest_blocked(args.world, &args.position.offset(direction.to_offset()))
+        && is_chest_blocked_at(args.world, &args.position.offset(direction.to_offset()))
     {
         return Some(0);
     }
@@ -203,13 +203,13 @@ fn get_chest_screen_handler_factory(
 
     let first_inventory = first_chest.and_then(BlockEntity::get_inventory)?;
 
-    if is_chest_blocked(args.world, args.position) {
+    if is_chest_blocked_at(args.world, args.position) {
         return None;
     }
 
     if let Some(direction) = connected_towards {
         let neighbor_pos = args.position.offset(direction.to_offset());
-        if is_chest_blocked(args.world, &neighbor_pos) {
+        if is_chest_blocked_at(args.world, &neighbor_pos) {
             return None;
         }
     }
@@ -592,33 +592,39 @@ fn get_chest_properties_if_can_connect(
     None
 }
 
-fn is_chest_blocked(world: &World, block_pos: &BlockPos) -> bool {
-    // Vanilla `ChestBlock#isChestBlockedAt`.
-    has_block_on_top(world, block_pos) || is_cat_sitting_on_chest(world, block_pos)
+/// Whether a chest-like block at `block_pos` cannot be opened.
+///
+/// Mirrors vanilla `ChestBlock.isChestBlockedAt`: the lid is blocked by a solid
+/// block above, or by a sitting cat resting on top of it.
+pub(crate) fn is_chest_blocked_at(world: &World, block_pos: &BlockPos) -> bool {
+    is_chest_blocked_by_block(world, block_pos) || is_cat_sitting_on_chest(world, block_pos)
 }
 
-/// A cat sitting on top stops the chest from opening (vanilla `ChestBlock#isCatSittingOnChest`).
-fn is_cat_sitting_on_chest(world: &World, block_pos: &BlockPos) -> bool {
-    // Vanilla checks the cubic box spanning the block directly above the chest.
-    let above = block_pos.up().0.to_f64();
-    let search_box = BoundingBox::new(above, above.add_raw(1.0, 1.0, 1.0));
-
-    world
-        .get_entities_at_box(&search_box)
-        .into_iter()
-        .any(|entity| {
-            *entity.get_entity().entity_type == EntityType::CAT
-                && entity
-                    .cast_any()
-                    .downcast_ref::<CatEntity>()
-                    .is_some_and(CatEntity::is_sitting)
-        })
-}
-
-fn has_block_on_top(world: &World, block_pos: &BlockPos) -> bool {
+/// Whether the block directly above `block_pos` prevents a chest-like block
+/// from opening.
+///
+/// Mirrors vanilla `ChestBlock.isBlockedChestByBlock`: the block above must be a
+/// redstone conductor. Note that vanilla's `EnderChestBlock` uses this check
+/// on its own (without the cat test), so it is exposed separately.
+pub(crate) fn is_chest_blocked_by_block(world: &World, block_pos: &BlockPos) -> bool {
     let above_pos = block_pos.up();
     let above_state = world.get_block_state(&above_pos);
     above_state.is_solid_block()
+}
+
+/// Checks whether a cat is sitting on top of the block at `block_pos`.
+///
+/// Vanilla queries `Cat.class` entities intersecting the one-block-high space
+/// directly above the chest and returns true if any is in the sitting pose.
+fn is_cat_sitting_on_chest(world: &World, block_pos: &BlockPos) -> bool {
+    let search_box = BoundingBox::from_block(&block_pos.up());
+
+    world.get_entities_at_box(&search_box).iter().any(|entity| {
+        entity
+            .cast_any()
+            .downcast_ref::<CatEntity>()
+            .is_some_and(CatEntity::is_sitting)
+    })
 }
 
 trait ChestTypeExt {

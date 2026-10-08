@@ -6,7 +6,6 @@ use crate::block::{
     BlockBehaviour, GetScreenHandlerFactoryArgs, NormalUseArgs, OnPlaceArgs,
     OnSyncedBlockEventArgs, PathComputationType, PlacedArgs, registry::BlockActionResult,
 };
-use crate::world::World;
 use pumpkin_data::block_properties::LadderLikeProperties;
 use pumpkin_data::{BlockState, BlockStateId, translation};
 use pumpkin_inventory::ViewerCountTracker;
@@ -17,7 +16,6 @@ use pumpkin_inventory::{
     screen_handler::{InventoryPlayer, ScreenHandlerFactory, SharedScreenHandler},
 };
 use pumpkin_macros::pumpkin_block;
-use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::text::TextComponent;
 
 pub struct EnderChestScreenFactory {
@@ -87,7 +85,8 @@ impl BlockBehaviour for EnderChestBlock {
             );
             args.player
                 .open_handled_screen(factory.as_ref(), Some(*args.position));
-            // TODO: PiglinBrain.onGuardedBlockInteracted(serverWorld, player, true);
+            // TODO: PiglinAi.angerNearbyPiglins(serverWorld, player, true) is not
+            // ported because Pumpkin has no piglin anger state/targeting yet.
         }
 
         BlockActionResult::Success
@@ -97,7 +96,10 @@ impl BlockBehaviour for EnderChestBlock {
         &self,
         args: GetScreenHandlerFactoryArgs<'_>,
     ) -> Option<Box<dyn ScreenHandlerFactory>> {
-        if is_chest_blocked(args.world, args.position) {
+        // Vanilla `EnderChestBlock` only blocks opening when the block above is a
+        // redstone conductor; it does not apply the cat-sitting test that regular
+        // chests use.
+        if crate::block::blocks::chests::is_chest_blocked_by_block(args.world, args.position) {
             return None;
         }
 
@@ -131,15 +133,6 @@ impl BlockBehaviour for EnderChestBlock {
     }
 }
 
-fn is_chest_blocked(world: &World, block_pos: &BlockPos) -> bool {
-    // Vanilla `EnderChestBlock` blocks only on a redstone conductor above, unlike `ChestBlock`.
-    has_block_on_top(world, block_pos)
-}
-fn has_block_on_top(world: &World, block_pos: &BlockPos) -> bool {
-    let above_pos = block_pos.up();
-    let above_state = world.get_block_state(&above_pos);
-    above_state.is_solid_block()
-}
 impl EnderChestBlock {
     pub const LID_ANIMATION_EVENT_TYPE: u8 = 1;
 }
