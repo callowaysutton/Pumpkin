@@ -43,7 +43,9 @@ use crate::{
         {OnNeighborUpdateArgs, OnScheduledTickArgs},
     },
     command::client_suggestions,
-    entity::{Entity, EntityBase, RemovalReason, player::Player, r#type::from_type},
+    entity::{
+        Entity, EntityBase, RemovalReason, ageable::AgeableMob, player::Player, r#type::from_type,
+    },
     error::PumpkinError,
     net::{ClientPlatform, bedrock::BedrockClient, java::JavaClient},
     plugin::{
@@ -2475,12 +2477,21 @@ impl World {
                 if rng().random::<f32>() < 0.0675
                     && self.get_block(&random_pos.to_block_pos().down()) != &Block::LIGHTNING_ROD
                 {
-                    let entity = Entity::new(
-                        self.clone(),
-                        random_pos.to_f64(),
+                    let horse = from_type(
                         &EntityType::SKELETON_HORSE,
+                        random_pos.to_f64(),
+                        self,
+                        Uuid::new_v4(),
                     );
-                    self.spawn_entity_non_save(Arc::new(entity));
+                    if let Some(horse_entity) = horse
+                        .cast_any()
+                        .downcast_ref::<crate::entity::passive::skeleton_horse::SkeletonHorseEntity>(
+                    ) {
+                        horse_entity.set_trap(true);
+                        horse_entity.set_age(0);
+                    }
+                    horse.init_data_tracker();
+                    self.spawn_entity_non_save(horse);
                 }
                 let entity = Entity::new(
                     self.clone(),
