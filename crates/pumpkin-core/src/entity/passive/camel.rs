@@ -111,6 +111,41 @@ impl CamelEntity {
         let entity = self.get_entity();
         entity.set_synced_data(pumpkin_data::tracked_data::camel::DASH, dashing);
     }
+
+    /// Vanilla `Camel.mobInteract` saddle and ride steps. `holding_food` is the caller's
+    /// `isFood` test, camel food blocks riding. `saddle_sound` carries the vanilla
+    /// `getSaddleSound` override (`EntityCamelHuskSaddle` for `CamelHusk`).
+    pub fn interact_saddle_or_ride(
+        &self,
+        player: &Arc<Player>,
+        item_stack: &mut ItemStack,
+        holding_food: bool,
+        saddle_sound: Sound,
+    ) -> bool {
+        let item = item_stack.get_item();
+
+        if item == &Item::SADDLE && !self.is_saddled() && !self.is_baby() {
+            self.set_saddled(true);
+            item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+            let entity = self.get_entity();
+            let world = entity.world.load();
+            world.play_sound(saddle_sound, SoundCategory::Neutral, &entity.pos.load());
+            return true;
+        }
+
+        if self.is_saddled() && !self.is_baby() && !holding_food {
+            let world = player.world();
+            let ent = &self.mob_entity.living_entity.entity;
+            if let Some(vehicle) = world.get_entity_by_id(ent.entity_id)
+                && let Some(passenger) = world.get_player_by_id(player.entity_id())
+            {
+                ent.add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 impl AgeableMob for CamelEntity {
@@ -129,6 +164,11 @@ impl Animal for CamelEntity {
 impl Mob for CamelEntity {
     fn as_ageable(&self) -> Option<&dyn AgeableMob> {
         Some(self)
+    }
+
+    /// Vanilla `Animal.removeWhenFarAway`: animals never despawn naturally.
+    fn remove_when_far_away(&self, _distance_sq: f64) -> bool {
+        false
     }
 
     fn as_animal(&self) -> Option<&dyn Animal> {
@@ -169,30 +209,13 @@ impl Mob for CamelEntity {
     }
 
     fn mob_interact(&self, player: &Arc<Player>, item_stack: &mut ItemStack) -> bool {
-        let item = item_stack.get_item();
-
-        if item == &Item::SADDLE && !self.is_saddled() && !self.is_baby() {
-            self.set_saddled(true);
-            item_stack.decrement_unless_creative(player.gamemode.load(), 1);
-            let entity = self.get_entity();
-            let world = entity.world.load();
-            world.play_sound(
-                Sound::EntityCamelSaddle,
-                SoundCategory::Neutral,
-                &entity.pos.load(),
-            );
+        if self.interact_saddle_or_ride(
+            player,
+            item_stack,
+            self.is_food(item_stack),
+            Sound::EntityCamelSaddle,
+        ) {
             return true;
-        }
-
-        if self.is_saddled() && !self.is_baby() && !self.is_food(item_stack) {
-            let world = player.world();
-            let ent = &self.mob_entity.living_entity.entity;
-            if let Some(vehicle) = world.get_entity_by_id(ent.entity_id)
-                && let Some(passenger) = world.get_player_by_id(player.entity_id())
-            {
-                ent.add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
-                return true;
-            }
         }
 
         self.animal_interact(player, item_stack, Sound::EntityCamelAmbient)
