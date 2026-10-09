@@ -79,6 +79,9 @@ pub struct ActiveTargetGoal {
     start_gate: Option<MobFilter>,
     /// Scales the follow range used for the search and the target predicate.
     follow_distance_scale: f64,
+    /// Vanilla `NonTameRandomTargetGoal`: an already tamed mob keeps its current target,
+    /// but never picks a new one.
+    non_tame: bool,
 }
 
 impl ActiveTargetGoal {
@@ -113,6 +116,7 @@ impl ActiveTargetGoal {
             gate: None,
             start_gate: None,
             follow_distance_scale: 1.0,
+            non_tame: false,
         }
     }
 
@@ -143,6 +147,10 @@ impl ActiveTargetGoal {
     #[must_use]
     pub fn gated_on_start(mut self: Box<Self>, gate: MobFilter) -> Box<Self> {
         self.start_gate = Some(gate);
+    /// Vanilla `NonTameRandomTargetGoal`: only pick a target while untamed.
+    #[must_use]
+    pub fn non_tame(mut self: Box<Self>) -> Box<Self> {
+        self.non_tame = true;
         self
     }
 
@@ -168,6 +176,7 @@ impl ActiveTargetGoal {
             gate: None,
             start_gate: None,
             follow_distance_scale: 1.0,
+            non_tame: false,
         })
     }
 
@@ -198,6 +207,7 @@ impl ActiveTargetGoal {
             gate: None,
             start_gate: None,
             follow_distance_scale: 1.0,
+            non_tame: false,
         })
     }
 
@@ -266,6 +276,9 @@ impl ActiveTargetGoal {
 
 impl Goal for ActiveTargetGoal {
     fn can_start(&mut self, mob: &dyn Mob) -> bool {
+        if self.non_tame && mob.is_tamed() {
+            return false;
+        }
         if self.gate.is_some_and(|gate| !gate(mob)) {
             return false;
         }

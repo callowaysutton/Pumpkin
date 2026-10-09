@@ -1,5 +1,6 @@
 use super::{Controls, Goal};
 use crate::entity::mob::Mob;
+use crate::entity::passive::tamable::TELEPORT_WHEN_DISTANCE_IS_SQ;
 use std::sync::atomic::Ordering;
 
 #[derive(Default)]
@@ -29,6 +30,21 @@ impl Goal for SitWhenOrderedToGoal {
 
         if !entity.on_ground.load(Ordering::Relaxed) {
             return false;
+        }
+
+        // Vanilla: a nearby owner that has just been hurt calls the pet off the sit.
+        if let Some(owner_uuid) = mob.get_owner_uuid()
+            && let Some(owner) = entity.world.load().get_player_by_uuid(owner_uuid)
+        {
+            let owner_entity = &owner.living_entity.entity;
+            let close = owner_entity
+                .pos
+                .load()
+                .squared_distance_to_vec(&entity.pos.load())
+                < TELEPORT_WHEN_DISTANCE_IS_SQ;
+            if close && owner.living_entity.last_attacker_id.load(Ordering::Relaxed) != 0 {
+                return false;
+            }
         }
 
         mob.is_sitting()
