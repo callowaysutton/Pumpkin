@@ -631,9 +631,10 @@ impl MobEntity {
         Self::check_surface_water_animal_spawn_rules(world, pos)
     }
 
-    pub fn try_attack(&self, caller: &dyn EntityBase, target: &dyn EntityBase) {
+    /// Vanilla `Mob.doHurtTarget`: returns whether the target was actually hurt.
+    pub fn try_attack(&self, caller: &dyn EntityBase, target: &dyn EntityBase) -> bool {
         if self.living_entity.dead.load(Relaxed) {
-            return;
+            return false;
         }
 
         let attack_damage: f32 =
@@ -657,6 +658,8 @@ impl MobEntity {
                 .last_attack_time
                 .store(self.living_entity.entity.age.load(Relaxed), Relaxed);
         }
+
+        damaged
     }
 
     fn get_attack_box(&self, attack_range: f64) -> BoundingBox {
@@ -944,6 +947,16 @@ pub trait Mob: EntityBase + Send + Sync {
     }
 
     fn on_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) {}
+
+    /// Vanilla `Mob.doHurtTarget`: applies the standard melee damage and, like vanilla's
+    /// subclass overrides, runs the mob's `on_attack` hook only when the target was hurt.
+    fn do_hurt_target(&self, target: &dyn EntityBase) -> bool {
+        let hurt = self.get_mob_entity().try_attack(self.get_entity(), target);
+        if hurt {
+            self.on_attack(target);
+        }
+        hurt
+    }
 
     fn on_attack(&self, _target: &dyn EntityBase) {}
 

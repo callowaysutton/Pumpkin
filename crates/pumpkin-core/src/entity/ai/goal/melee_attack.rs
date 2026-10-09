@@ -209,8 +209,9 @@ impl Goal for MeleeAttackGoal {
         {
             self.cooldown = self.get_max_cooldown();
             mob.get_mob_entity().living_entity.swing_hand();
-            mob.get_mob_entity()
-                .try_attack(mob.get_entity(), target.as_ref());
+            // Vanilla `MeleeAttackGoal.attack` routes through the mob's `doHurtTarget` so
+            // subclass overrides (e.g. the wither skeleton's wither effect) still run.
+            mob.do_hurt_target(target.as_ref());
         }
     }
 
