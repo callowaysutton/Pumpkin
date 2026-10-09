@@ -223,21 +223,65 @@ impl Mob for HoglinEntity {
     }
 
     fn on_attack(&self, target: &dyn EntityBase) {
-        throw_target(&self.mob_entity.living_entity.entity, target);
+        throw_target(self, target);
     }
 }
 
+/// Vanilla `HoglinBase.hurtAndThrowTarget`.
+///
+/// Randomized attack damage, then a knockback throw of the target when the attacker is an
+/// adult. Vanilla reads `isBaby` off the body; hoglins and zoglins expose it differently,
+/// so callers pass it in.
+pub fn hurt_and_throw_target(body: &dyn Mob, is_baby: bool, target: &dyn EntityBase) -> bool {
+    let attack_damage = body
+        .get_mob_entity()
+        .living_entity
+        .get_attribute_value(&Attributes::ATTACK_DAMAGE) as f32;
+    let actual_damage = if !is_baby && attack_damage > 0.0 {
+        attack_damage / 2.0 + rand::random_range(0..attack_damage as i32) as f32
+    } else {
+        attack_damage
+    };
+
+    let damaged = target.damage_with_context(
+        body.get_entity(),
+        actual_damage,
+        pumpkin_data::damage::DamageType::MOB_ATTACK,
+        None,
+        Some(body.get_entity()),
+        Some(body.get_entity()),
+    );
+    if damaged && !is_baby {
+        throw_target(body, target);
+    }
+    damaged
+}
+
 /// Vanilla `HoglinBase.throwTarget`, shared with zoglins.
-pub fn throw_target(attacker: &Entity, target: &dyn EntityBase) {
-    let my_pos = attacker.pos.load();
+pub fn throw_target(body: &dyn Mob, target: &dyn EntityBase) {
+    let effective_knockback = body
+        .get_mob_entity()
+        .living_entity
+        .get_attribute_value(&Attributes::ATTACK_KNOCKBACK)
+        - target.get_living_entity().map_or(0.0, |living| {
+            living.get_attribute_value(&Attributes::KNOCKBACK_RESISTANCE)
+        });
+    if effective_knockback <= 0.0 {
+        return;
+    }
+
+    let my_pos = body.get_entity().pos.load();
     let target_pos = target.get_entity().pos.load();
-    let dx = target_pos.x - my_pos.x;
-    let dz = target_pos.z - my_pos.z;
-    let dist = dx.hypot(dz).max(0.001);
-    let vel = target.get_entity().velocity.load();
-    target.get_entity().velocity.store(Vector3::new(
-        vel.x + (dx / dist) * 0.5,
-        0.5,
-        vel.z + (dz / dist) * 0.5,
-    ));
+    let push = Vector3::new(target_pos.x - my_pos.x, 0.0, target_pos.z - my_pos.z).normalize();
+    let horizontal_scale = effective_knockback * f64::from(rand::random::<f32>() * 0.5 + 0.2);
+    // Vanilla quirk: `Vec3.yRot` takes radians, but `horizontalPushAngle` is a whole number
+    // (-10..10) passed through unconverted.
+    let slide = f64::from(rand::random_range(0..21) - 10);
+    let (sin, cos) = slide.sin_cos();
+    let horizontal = Vector3::new(
+        (push.x * cos + push.z * sin) * horizontal_scale,
+        effective_knockback * f64::from(rand::random::<f32>()) * 0.5,
+        (push.z * cos - push.x * sin) * horizontal_scale,
+    );
+    target.get_entity().add_velocity(horizontal);
 }

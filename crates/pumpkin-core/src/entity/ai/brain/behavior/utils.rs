@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::entity::EntityBase;
+use crate::entity::mob::MobEntity;
+use crate::entity::{Entity, EntityBase};
 use crate::world::World;
 
 use super::super::memory::position_tracker::{BlockPosTracker, EntityTracker, PositionTracker};
@@ -122,17 +123,25 @@ pub fn get_living_entity_from_uuid_memory(
     entity.get_living_entity().is_some().then_some(entity)
 }
 
+/// Vanilla `BehaviorUtils.isWithinAttackRange` for melee mobs: no vanilla brain using it can
+/// hold a ranged weapon, so it reduces to the `Mob.isWithinMeleeAttackRange` branch.
+#[must_use]
+pub fn is_within_attack_range(body: &MobEntity, target: &dyn EntityBase) -> bool {
+    body.is_in_attack_range(target)
+}
+
+/// Vanilla `BehaviorUtils.isOtherTargetMuchFurtherAwayThanCurrentAttackTarget`.
 #[must_use]
 pub fn is_other_target_much_further_away_than_current_attack_target(
     brain: &Brain,
-    body: &dyn EntityBase,
+    body: &Entity,
     other_target: &dyn EntityBase,
     how_much_further_away: f64,
 ) -> bool {
     let Some(current) = brain.get(types::ATTACK_TARGET) else {
         return false;
     };
-    let pos = body.get_entity().pos.load();
+    let pos = body.pos.load();
     let dist_to_current = pos.squared_distance_to_vec(&current.get_entity().pos.load());
     let dist_to_other = pos.squared_distance_to_vec(&other_target.get_entity().pos.load());
     dist_to_other > dist_to_current + how_much_further_away * how_much_further_away

@@ -7,8 +7,12 @@ use super::memory::{MemoryModuleId, types};
 use super::{BrainTick, VisibilityContext};
 
 pub mod dummy;
+pub mod nearest_living_entities;
+pub mod nearest_players;
 
 pub use dummy::DummySensor;
+pub use nearest_living_entities::NearestLivingEntitySensor;
+pub use nearest_players::NearestPlayersSensor;
 
 pub const DEFAULT_SCAN_RATE: i32 = 20;
 
@@ -20,6 +24,8 @@ pub trait Sensor: Send + Sync {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SensorType {
     Dummy,
+    NearestLivingEntities,
+    NearestPlayers,
 }
 
 impl SensorType {
@@ -27,19 +33,23 @@ impl SensorType {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Dummy => "minecraft:dummy",
+            Self::NearestLivingEntities => "minecraft:nearest_living_entities",
+            Self::NearestPlayers => "minecraft:nearest_players",
         }
     }
 
     #[must_use]
     pub const fn scan_rate(self) -> i32 {
         match self {
-            Self::Dummy => DEFAULT_SCAN_RATE,
+            Self::Dummy | Self::NearestLivingEntities | Self::NearestPlayers => DEFAULT_SCAN_RATE,
         }
     }
 
     fn create_sensor(self) -> Box<dyn Sensor> {
         match self {
             Self::Dummy => Box::new(DummySensor),
+            Self::NearestLivingEntities => Box::new(NearestLivingEntitySensor),
+            Self::NearestPlayers => Box::new(NearestPlayersSensor),
         }
     }
 
