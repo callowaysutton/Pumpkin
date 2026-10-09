@@ -15,9 +15,9 @@ use rand::{RngExt, rng};
 
 use crate::{
     block::{
-        BlockBehaviour, BlockIsReplacing, CanPlaceAtArgs, EmitsRedstonePowerArgs,
-        GetRedstonePowerArgs, GetStateForNeighborUpdateArgs, OnPlaceArgs, OnScheduledTickArgs,
-        OnStateReplacedArgs, PlayerPlacedArgs, blocks::vine::get_nearest_looking_directions,
+        BlockBehaviour, CanPlaceAtArgs, EmitsRedstonePowerArgs, GetRedstonePowerArgs,
+        GetStateForNeighborUpdateArgs, OnPlaceArgs, OnScheduledTickArgs, OnStateReplacedArgs,
+        PlayerPlacedArgs,
     },
     world::World,
 };
@@ -33,24 +33,11 @@ impl BlockBehaviour for TripwireHookBlock {
         let mut props = TripwireHookProperties::default(args.block);
         props.powered = false;
         props.attached = false;
-        // Vanilla `TripWireHookBlock#getStateForPlacement` tries the player's nearest looking
-        // directions in order and uses the first horizontal one that can support the hook.
-        let nearest_directions = get_nearest_looking_directions(
-            args.player,
-            args.replacing != BlockIsReplacing::None,
-            args.direction,
-        );
-        for direction in nearest_directions {
-            if direction.is_horizontal() {
-                props.facing = direction.opposite().to_cardinal_direction();
-                if Self::can_place_at(args.world, args.position, direction) {
-                    return props.to_state_id(args.block);
-                }
-            }
+        if Self::can_place_at(args.world, args.position, args.direction) {
+            props.facing = args.direction.opposite().to_cardinal_direction();
+            return props.to_state_id(args.block);
         }
-        // Vanilla returns `null`, which makes the placement fail instead of dropping a
-        // Facing-north hook that a neighbour update would remove on the next tick.
-        Block::AIR.default_state.id
+        args.block.default_state.id
     }
 
     fn can_place_at(&self, args: CanPlaceAtArgs<'_>) -> bool {
@@ -128,23 +115,6 @@ impl BlockBehaviour for TripwireHookBlock {
 }
 
 impl TripwireHookBlock {
-    /// Vanilla `TripWireHookBlock#onRemoved`.
-    fn on_removed(world: &Arc<World>, pos: &BlockPos, state_id: BlockStateId) {
-        let props = TripwireHookProperties::from_state_id(state_id);
-        if props.powered || props.attached {
-            Self::update(world, *pos, state_id, true, false, -1, None);
-        }
-        if props.powered {
-            world.update_neighbor(pos, &Block::TRIPWIRE_HOOK);
-            world.update_neighbor(
-                &pos.offset(props.facing.opposite().to_offset()),
-                &Block::TRIPWIRE_HOOK,
-            );
-        }
-    }
-
-    /// `face` is the direction from the hook to the block it is mounted on. Vanilla
-    /// `TripWireHookBlock#canSurvive` checks that block's face pointing back at the hook.
     pub fn can_place_at(
         world: &dyn BlockAccessor,
         block_pos: &BlockPos,
@@ -156,6 +126,21 @@ impl TripwireHookBlock {
         let place_block_pos = block_pos.offset(face.to_offset());
         let place_block_state = world.get_block_state(&place_block_pos);
         place_block_state.is_side_solid(face.opposite())
+    }
+
+    /// `TripWireHookBlock.onRemoved` in Java.
+    fn on_removed(world: &Arc<World>, block_pos: &BlockPos, state_id: BlockStateId) {
+        let props = TripwireHookProperties::from_state_id(state_id);
+        if props.attached || props.powered {
+            Self::update(world, *block_pos, state_id, true, false, -1, None);
+        }
+        if props.powered {
+            Self::update_neighbors_on_axis(
+                world,
+                block_pos,
+                BlockDirection::from_cardinal_direction(props.facing),
+            );
+        }
     }
 
     #[expect(clippy::too_many_lines)]
@@ -231,13 +216,10 @@ impl TripwireHookBlock {
                 BlockFlags::NOTIFY_ALL,
             );
             Self::update_neighbors_on_axis(
-                &Block::TRIPWIRE_HOOK,
                 world,
-                end_hook_pos,
+                &end_hook_pos,
                 BlockDirection::from_cardinal_direction(future_hook_facing),
             );
-            // Vanilla: the neighbour update above may have removed the start hook, in which
-            // case it must deactivate itself and the pass must stop here.
             if world.get_block(&start_hook_pos) != &Block::TRIPWIRE_HOOK {
                 Self::on_removed(
                     world,
@@ -246,7 +228,7 @@ impl TripwireHookBlock {
                 );
                 return;
             }
-            Self::play_sound(
+            Self::emit_state(
                 world,
                 &end_hook_pos,
                 future_attached,
@@ -256,7 +238,7 @@ impl TripwireHookBlock {
             );
         }
 
-        Self::play_sound(
+        Self::emit_state(
             world,
             &start_hook_pos,
             future_attached,
@@ -275,9 +257,8 @@ impl TripwireHookBlock {
             );
             if notify_neighbors {
                 Self::update_neighbors_on_axis(
-                    &Block::TRIPWIRE_HOOK,
                     world,
-                    start_hook_pos,
+                    &start_hook_pos,
                     BlockDirection::from_cardinal_direction(start_hook_props.facing),
                 );
             }
@@ -285,15 +266,15 @@ impl TripwireHookBlock {
 
         if start_hook_props.attached != future_attached {
             for l in 1..j {
-                let current_wire_pos =
+                let current_wrie_pos =
                     start_hook_pos.offset_dir(start_hook_props.facing.to_offset(), l);
-                if let Some(mut wire_props) = wires_props[l as usize] {
-                    let current_block = world.get_block(&current_wire_pos);
+                if let Some(mut lv8) = wires_props[l as usize] {
+                    let current_block = world.get_block(&current_wrie_pos);
                     if current_block == &Block::TRIPWIRE || current_block == &Block::TRIPWIRE_HOOK {
-                        wire_props.attached = future_attached;
+                        lv8.attached = future_attached;
                         world.set_block_state(
-                            &current_wire_pos,
-                            wire_props.to_state_id(&Block::TRIPWIRE),
+                            &current_wrie_pos,
+                            lv8.to_state_id(&Block::TRIPWIRE),
                             BlockFlags::NOTIFY_ALL,
                         );
                     }
@@ -302,8 +283,9 @@ impl TripwireHookBlock {
         }
     }
 
+    /// `TripWireHookBlock.emitState` in Java.
     #[expect(clippy::fn_params_excessive_bools)]
-    fn play_sound(
+    fn emit_state(
         world: &Arc<World>,
         block_pos: &BlockPos,
         attached: bool,
@@ -312,36 +294,30 @@ impl TripwireHookBlock {
         off: bool,
     ) {
         let cat = SoundCategory::Blocks;
-        let pos = block_pos.to_f64();
+        let pos = block_pos.to_centered_f64();
         if on && !off {
             world.play_sound_raw(Sound::BlockTripwireClickOn as u16, cat, &pos, 0.4, 0.6);
-            world.emit_game_event(GameEvent::BlockActivate.name(), block_pos.to_centered_f64());
+            world.emit_game_event(GameEvent::BlockActivate.name(), pos);
         } else if !on && off {
             world.play_sound_raw(Sound::BlockTripwireClickOff as u16, cat, &pos, 0.4, 0.5);
-            world.emit_game_event(
-                GameEvent::BlockDeactivate.name(),
-                block_pos.to_centered_f64(),
-            );
+            world.emit_game_event(GameEvent::BlockDeactivate.name(), pos);
         } else if attached && !detached {
             world.play_sound_raw(Sound::BlockTripwireAttach as u16, cat, &pos, 0.4, 0.7);
-            world.emit_game_event(GameEvent::BlockAttach.name(), block_pos.to_centered_f64());
+            world.emit_game_event(GameEvent::BlockAttach.name(), pos);
         } else if !attached && detached {
             let pitch = 1.2 / rng().random::<f32>().mul_add(0.2, 0.9);
             world.play_sound_raw(Sound::BlockTripwireDetach as u16, cat, &pos, 0.4, pitch);
-            world.emit_game_event(GameEvent::BlockDetach.name(), block_pos.to_centered_f64());
+            world.emit_game_event(GameEvent::BlockDetach.name(), pos);
         }
     }
 
+    /// `TripWireHookBlock.notifyNeighbors` in Java.
     pub fn update_neighbors_on_axis(
-        block: &Block,
         world: &Arc<World>,
-        block_pos: BlockPos,
+        block_pos: &BlockPos,
         direction: BlockDirection,
     ) {
-        world.update_neighbor(&block_pos, block);
-        world.update_neighbors(
-            &block_pos.offset(direction.opposite().to_offset()),
-            Some(direction),
-        );
+        world.update_neighbors(block_pos, None);
+        world.update_neighbors(&block_pos.offset(direction.opposite().to_offset()), None);
     }
 }
