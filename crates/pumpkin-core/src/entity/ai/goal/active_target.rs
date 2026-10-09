@@ -147,10 +147,21 @@ impl ActiveTargetGoal {
     #[must_use]
     pub fn gated_on_start(mut self: Box<Self>, gate: MobFilter) -> Box<Self> {
         self.start_gate = Some(gate);
+        self
+    }
+
     /// Vanilla `NonTameRandomTargetGoal`: only pick a target while untamed.
     #[must_use]
     pub fn non_tame(mut self: Box<Self>) -> Box<Self> {
         self.non_tame = true;
+        self
+    }
+
+    /// Vanilla `NearestAttackableTargetGoal.setUnseenMemoryTicks`: how long the mob
+    /// keeps targeting after losing sight of its target.
+    #[must_use]
+    pub fn set_unseen_memory_ticks(mut self: Box<Self>, ticks: i32) -> Box<Self> {
+        self.track_target_goal.max_time_without_visibility = ticks;
         self
     }
 
