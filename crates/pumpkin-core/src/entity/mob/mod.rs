@@ -995,6 +995,10 @@ pub trait Mob: EntityBase + Send + Sync {
         None
     }
 
+    fn as_llama(&self) -> Option<&dyn crate::entity::passive::llama::Llama> {
+        None
+    }
+
     fn as_patrolling_monster(&self) -> Option<&dyn patrol::PatrollingMonster> {
         None
     }
