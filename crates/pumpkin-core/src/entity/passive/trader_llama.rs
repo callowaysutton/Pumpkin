@@ -18,11 +18,14 @@ use crate::entity::{
     Entity, EntityBase,
     ageable::{AgeableData, AgeableMob},
     ai::goal::{
-        active_target::ActiveTargetGoal, breed::BreedGoal, escape_danger::EscapeDangerGoal,
-        follow_parent::FollowParentGoal, look_around::RandomLookAroundGoal,
+        Controls, Goal, active_target::ActiveTargetGoal, breed::BreedGoal,
+        escape_danger::EscapeDangerGoal, follow_parent::FollowParentGoal,
+        llama_follow_caravan::LlamaFollowCaravanGoal, look_around::RandomLookAroundGoal,
         look_at_entity::LookAtEntityGoal, ranged_attack::RangedAttackGoal, revenge::RevengeGoal,
-        swim::SwimGoal, tempt::TemptGoal, wander_around::WanderAroundGoal,
+        swim::SwimGoal, tempt::TemptGoal, track_target::TrackTargetGoal,
+        wander_around::WanderAroundGoal,
     },
+    ai::target_predicate::TargetPredicate,
     mob::{Mob, MobEntity, RangedAttackMob},
     passive::animal::{Animal, get_carpet_color_from_item},
     player::Player,
@@ -85,6 +88,7 @@ pub struct TraderLlamaEntity {
     pub has_chest: AtomicBool,
     pub temper: AtomicI32,
     pub owner: AtomicCell<Option<Uuid>>,
+    pub caravan: crate::entity::passive::llama::CaravanState,
 }
 
 impl TraderLlamaEntity {
@@ -104,6 +108,7 @@ impl TraderLlamaEntity {
             has_chest: AtomicBool::new(false),
             temper: AtomicI32::new(0),
             owner: AtomicCell::new(None),
+            caravan: crate::entity::passive::llama::CaravanState::default(),
         };
         let mob_arc = Arc::new(llama);
         let mob_weak: Weak<dyn Mob> = {
@@ -128,7 +133,10 @@ impl TraderLlamaEntity {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             goal_selector.add_goal(0, Box::new(SwimGoal::default()));
-            goal_selector.add_goal(1, EscapeDangerGoal::new(1.2));
+            // Vanilla `TraderLlama` registers a faster `PanicGoal(this, 2.0)` than the base
+            // llama's `PanicGoal(this, 1.2)`.
+            goal_selector.add_goal(1, EscapeDangerGoal::new(2.0));
+            goal_selector.add_goal(2, Box::new(LlamaFollowCaravanGoal::new(2.1)));
             goal_selector.add_goal(2, BreedGoal::new(1.0));
             goal_selector.add_goal(
                 3,
@@ -148,6 +156,7 @@ impl TraderLlamaEntity {
                 2,
                 ActiveTargetGoal::with_default(&mob_arc.mob_entity, &EntityType::WOLF, true),
             );
+            target_selector.add_goal(1, Box::new(TraderLlamaDefendWanderingTraderGoal::new()));
         };
 
         mob_arc
@@ -392,5 +401,113 @@ impl Mob for TraderLlamaEntity {
 impl RangedAttackMob for TraderLlamaEntity {
     fn perform_ranged_attack(&self, target: &Arc<dyn EntityBase>, _power: f32) {
         self.spit(target);
+    }
+}
+
+/// Vanilla `TraderLlama.TraderLlamaDefendWanderingTraderGoal`: while leashed to a wandering
+/// trader, this llama attacks whatever hurt the trader last.
+pub struct TraderLlamaDefendWanderingTraderGoal {
+    track_target_goal: TrackTargetGoal,
+    target_predicate: TargetPredicate,
+    owner_last_hurt_by: Option<Arc<dyn EntityBase>>,
+    timestamp: i32,
+}
+
+impl TraderLlamaDefendWanderingTraderGoal {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            // Vanilla `TargetGoal(mob, false)`: the target is kept without seeing it.
+            track_target_goal: TrackTargetGoal::with_default(false),
+            // Vanilla `TargetingConditions.DEFAULT` signals combat targeting without a range.
+            target_predicate: TargetPredicate::create_attackable(),
+            owner_last_hurt_by: None,
+            timestamp: 0,
+        }
+    }
+}
+
+impl Default for TraderLlamaDefendWanderingTraderGoal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Goal for TraderLlamaDefendWanderingTraderGoal {
+    fn can_start(&mut self, mob: &dyn Mob) -> bool {
+        let entity = mob.get_entity();
+        let Some(owner) = entity
+            .leashed_to
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
+            return false;
+        };
+        if owner.get_entity().entity_type != &EntityType::WANDERING_TRADER {
+            return false;
+        }
+        let Some(owner_living) = owner.get_living_entity() else {
+            return false;
+        };
+
+        let timestamp = owner_living.last_attacked_time.load(Ordering::Relaxed);
+
+        // Vanilla: `timeStamp != this.timestamp && canAttack(...)`, so only a new attack.
+        if timestamp == self.timestamp {
+            return false;
+        }
+
+        let attacker_id = owner_living.last_attacker_id.load(Ordering::Relaxed);
+        if attacker_id == 0 {
+            return false;
+        }
+        let world = entity.world.load();
+        let Some(attacker) = world.get_entity_by_id(attacker_id) else {
+            return false;
+        };
+
+        if !self
+            .track_target_goal
+            .can_track(mob, Some(attacker.as_ref()), &self.target_predicate)
+        {
+            return false;
+        }
+
+        self.owner_last_hurt_by = Some(attacker);
+        true
+    }
+
+    fn should_continue(&mut self, mob: &dyn Mob) -> bool {
+        self.track_target_goal.should_continue(mob)
+    }
+
+    fn start(&mut self, mob: &dyn Mob) {
+        mob.set_mob_target(self.owner_last_hurt_by.clone());
+
+        // Vanilla refreshes the timestamp from the wandering trader, if it is still leashed.
+        let holder = mob
+            .get_entity()
+            .leashed_to
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(owner) = holder
+            && owner.get_entity().entity_type == &EntityType::WANDERING_TRADER
+            && let Some(owner_living) = owner.get_living_entity()
+        {
+            self.timestamp = owner_living.last_attacked_time.load(Ordering::Relaxed);
+        }
+
+        self.track_target_goal.start(mob);
+    }
+
+    fn stop(&mut self, mob: &dyn Mob) {
+        self.owner_last_hurt_by = None;
+        self.track_target_goal.stop(mob);
+    }
+
+    fn controls(&self) -> Controls {
+        self.track_target_goal.controls()
     }
 }

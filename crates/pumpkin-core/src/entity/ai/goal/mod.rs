@@ -27,6 +27,7 @@ pub mod goal_selector;
 pub mod guardian_attack;
 pub mod interact;
 pub mod leap_at_target;
+pub mod llama_follow_caravan;
 pub mod look_around;
 pub mod look_at_entity;
 pub mod melee_attack;
