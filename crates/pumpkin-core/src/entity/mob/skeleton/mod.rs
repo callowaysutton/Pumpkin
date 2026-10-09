@@ -30,7 +30,36 @@ pub struct SkeletonEntityBase {
 }
 
 impl SkeletonEntityBase {
+    /// Vanilla `AbstractSkeleton` attack intervals; the bogged overrides them with
+    /// the increased pair below.
+    pub const HARD_ATTACK_INTERVAL: i32 = 20;
+    pub const NORMAL_ATTACK_INTERVAL: i32 = 40;
+    pub const INCREASED_HARD_ATTACK_INTERVAL: i32 = 50;
+    pub const INCREASED_NORMAL_ATTACK_INTERVAL: i32 = 70;
+
     pub fn new(entity: Entity) -> Arc<Self> {
+        Self::new_with_bow_attack_intervals(
+            entity,
+            Self::HARD_ATTACK_INTERVAL,
+            Self::NORMAL_ATTACK_INTERVAL,
+        )
+    }
+
+    /// Builds the shared skeleton goal wiring with a bow attack interval pair.
+    /// `AbstractSkeleton::reassessWeaponGoal` picks the interval here by difficulty
+    /// (hard attack interval on hard, attack interval otherwise) and does not
+    /// re-read it unless equipment changes.
+    pub fn new_with_bow_attack_intervals(
+        entity: Entity,
+        hard_interval: i32,
+        normal_interval: i32,
+    ) -> Arc<Self> {
+        let difficulty = entity.world.load().level_info.load().difficulty;
+        let attack_interval = if difficulty == Difficulty::Hard {
+            hard_interval
+        } else {
+            normal_interval
+        };
         let mob_entity = MobEntity::new(entity);
         let mob = Self { mob_entity };
         let mob_arc = Arc::new(mob);
@@ -51,7 +80,7 @@ impl SkeletonEntityBase {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             goal_selector.add_goal(0, Box::new(SwimGoal::default()));
-            goal_selector.add_goal(2, Box::new(BowAttackGoal::new(1.0, 20, 15.0)));
+            goal_selector.add_goal(2, Box::new(BowAttackGoal::new(1.0, attack_interval, 15.0)));
             goal_selector.add_goal(3, Box::new(MeleeAttackGoal::new(1.2, false)));
             goal_selector.add_goal(
                 3,

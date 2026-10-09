@@ -8,6 +8,7 @@ use crate::entity::ai::goal::goal_selector::GoalSelector;
 use crate::entity::ai::sensing::Sensing;
 use crate::entity::player::Player;
 use crate::entity::predicate::EntityPredicate;
+use crate::entity::projectile::arrow::ArrowEntity;
 use crate::server::Server;
 use crate::world::World;
 use crate::world::brightness::DAYLIGHT_BRIGHTNESS;
@@ -946,6 +947,11 @@ pub trait Mob: EntityBase + Send + Sync {
     fn on_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) {}
 
     fn on_attack(&self, _target: &dyn EntityBase) {}
+
+    /// Lets the subclass customize the arrow the bow attack goal is about to fire.
+    /// Port of vanilla `AbstractSkeleton::getArrow`, which builds the arrow and lets
+    /// the variant add effects; the goal builds the arrow here, so the variant mutates it.
+    fn modify_shot_arrow(&self, _arrow: &ArrowEntity) {}
 
     fn on_eating_grass(&self) {}
 

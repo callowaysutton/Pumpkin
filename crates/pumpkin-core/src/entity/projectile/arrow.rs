@@ -9,7 +9,7 @@ use crate::{
 };
 use bytes::BufMut;
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::data_component_impl::PotionDurationScaleImpl;
+use pumpkin_data::data_component_impl::{PotionContentsImpl, PotionDurationScaleImpl};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -168,6 +168,36 @@ impl ArrowEntity {
     #[must_use]
     pub fn get_weapon_item(&self) -> Option<ItemStack> {
         self.weapon.read().ok().and_then(|w| w.clone())
+    }
+
+    /// Vanilla `Arrow::addEffect`: adds the effect to the arrow's potion contents,
+    /// which tints the arrow, applies to what it hits and travels with the arrow
+    /// a player picks up.
+    pub fn add_effect(&self, effect: &pumpkin_data::potion::Effect) {
+        let mut item_stack = self
+            .item_stack
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut contents = item_stack
+            .get_data_component::<PotionContentsImpl>()
+            .cloned()
+            .unwrap_or_else(|| PotionContentsImpl {
+                potion_id: None,
+                custom_color: None,
+                custom_effects: Vec::new(),
+                custom_name: None,
+            });
+        contents
+            .custom_effects
+            .push(pumpkin_data::data_component_impl::StatusEffectInstance {
+                effect_id: std::borrow::Cow::Borrowed(effect.effect_type.minecraft_name),
+                amplifier: i32::from(effect.amplifier),
+                duration: effect.duration,
+                ambient: effect.ambient,
+                show_particles: effect.show_particles,
+                show_icon: effect.show_icon,
+            });
+        item_stack.set_data_component(contents);
     }
 
     /// Applies projectile-spawned enchantment effects matching vanilla `Projectile::applyOnProjectileSpawned`.

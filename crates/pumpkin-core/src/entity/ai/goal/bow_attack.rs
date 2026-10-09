@@ -105,6 +105,8 @@ impl BowAttackGoal {
             crate::enchantment::EnchantmentHelper::modify_knockback(&bow_item, 0.0) as u8,
             std::sync::atomic::Ordering::Relaxed,
         );
+        // Vanilla `AbstractSkeleton::getArrow` lets the variant add arrow effects first.
+        mob.modify_shot_arrow(&arrow);
         arrow.apply_on_projectile_spawned(&projectile);
         if entity.is_on_fire() {
             arrow.set_flame(true);
