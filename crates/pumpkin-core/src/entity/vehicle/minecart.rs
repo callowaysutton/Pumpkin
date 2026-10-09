@@ -1,4 +1,5 @@
 mod chest;
+pub mod command_block;
 mod furnace;
 mod hopper;
 mod rideable;
@@ -31,6 +32,7 @@ use crate::entity::vehicle::container::VehicleInventory;
 use crate::entity::vehicle::container::apply_natural_slowdown;
 use crate::entity::vehicle::vehicle::VehicleEntity;
 use chest::ChestMinecart;
+use command_block::CommandBlockMinecart;
 use furnace::FurnaceMinecart;
 use hopper::HopperMinecart;
 use rideable::RideableMinecart;
@@ -68,6 +70,7 @@ enum MinecartKind {
     Furnace(FurnaceMinecart),
     Hopper(HopperMinecart),
     Tnt(TntMinecart),
+    CommandBlock(Arc<CommandBlockMinecart>),
     Other,
 }
 
@@ -83,6 +86,9 @@ impl MinecartEntity {
                 MinecartKind::Hopper(HopperMinecart::new())
             }
             id if id == EntityType::TNT_MINECART.id => MinecartKind::Tnt(TntMinecart::new()),
+            id if id == EntityType::COMMAND_BLOCK_MINECART.id => {
+                MinecartKind::CommandBlock(Arc::new(CommandBlockMinecart::new()))
+            }
             _ => MinecartKind::Other,
         };
         Self {
@@ -97,6 +103,20 @@ impl MinecartEntity {
             MinecartKind::Hopper(minecart) => Some(minecart.inventory()),
             _ => None,
         }
+    }
+
+    /// Vanilla `MinecartCommandBlock#setCommand`: only a command block minecart
+    /// accepts this, and the server answers with whether it did.
+    pub fn set_command(&self, command: &str, track_output: bool) -> bool {
+        let MinecartKind::CommandBlock(minecart) = &self.kind else {
+            return false;
+        };
+        *minecart
+            .command
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = command.to_string();
+        minecart.track_output.store(track_output, Ordering::Relaxed);
+        true
     }
 
     const fn drop_item(&self) -> Option<&'static Item> {
@@ -117,6 +137,7 @@ impl EntityBase for MinecartEntity {
             MinecartKind::Furnace(minecart) => minecart.write_nbt(nbt),
             MinecartKind::Hopper(minecart) => minecart.write_nbt(nbt),
             MinecartKind::Tnt(minecart) => minecart.write_nbt(nbt),
+            MinecartKind::CommandBlock(minecart) => minecart.write_nbt(nbt),
             MinecartKind::Rideable(_) | MinecartKind::Other => {}
         }
     }
@@ -127,6 +148,7 @@ impl EntityBase for MinecartEntity {
             MinecartKind::Furnace(minecart) => minecart.read_nbt(nbt),
             MinecartKind::Hopper(minecart) => minecart.read_nbt(nbt),
             MinecartKind::Tnt(minecart) => minecart.read_nbt(nbt),
+            MinecartKind::CommandBlock(minecart) => minecart.read_nbt(nbt),
             MinecartKind::Rideable(_) | MinecartKind::Other => {}
         }
     }
@@ -228,6 +250,9 @@ impl EntityBase for MinecartEntity {
                     match &self.kind {
                         MinecartKind::Tnt(minecart) => {
                             minecart.prime(&self.vehicle.entity, 80);
+                        }
+                        MinecartKind::CommandBlock(minecart) => {
+                            minecart.activate(&self.vehicle.entity);
                         }
                         MinecartKind::Rideable(_) => {
                             if let Ok(passengers) = self.vehicle.entity.passengers.try_lock() {
@@ -771,7 +796,7 @@ impl EntityBase for MinecartEntity {
                 true
             }
             MinecartKind::Rideable(_) => RideableMinecart::interact(&self.vehicle.entity, player),
-            MinecartKind::Tnt(_) | MinecartKind::Other => false,
+            MinecartKind::Tnt(_) | MinecartKind::CommandBlock(_) | MinecartKind::Other => false,
         }
     }
 
