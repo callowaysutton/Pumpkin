@@ -4247,6 +4247,9 @@ impl EntityBase for Entity {
         self.update_last_pos();
         self.tick_portal(caller);
         self.update_fluid_state(caller);
+        if let Some(mob) = caller.get_mob() {
+            mob.update_swimming();
+        }
         self.check_out_of_world(caller);
         let fire_ticks = self.fire_ticks.load(Ordering::Relaxed);
 
