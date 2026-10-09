@@ -1136,6 +1136,11 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
         true
     }
 
+    /// Vanilla `Llama` implementors (llama, trader llama); return `Some(self)` then.
+    fn as_llama(&self) -> Option<&dyn crate::entity::passive::llama::Llama> {
+        None
+    }
+
     fn as_patrolling_monster(&self) -> Option<&dyn patrol::PatrollingMonster> {
         None
     }

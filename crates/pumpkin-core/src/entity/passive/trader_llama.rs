@@ -28,6 +28,7 @@ use crate::entity::{
     ai::target_predicate::TargetPredicate,
     mob::{Mob, MobEntity, RangedAttackMob},
     passive::animal::{Animal, get_carpet_color_from_item},
+    passive::llama::{CaravanData, Llama},
     player::Player,
     projectile::llama_spit::LlamaSpitEntity,
 };
@@ -88,7 +89,7 @@ pub struct TraderLlamaEntity {
     pub has_chest: AtomicBool,
     pub temper: AtomicI32,
     pub owner: AtomicCell<Option<Uuid>>,
-    pub caravan: crate::entity::passive::llama::CaravanState,
+    pub caravan_data: CaravanData,
 }
 
 impl TraderLlamaEntity {
@@ -108,7 +109,7 @@ impl TraderLlamaEntity {
             has_chest: AtomicBool::new(false),
             temper: AtomicI32::new(0),
             owner: AtomicCell::new(None),
-            caravan: crate::entity::passive::llama::CaravanState::default(),
+            caravan_data: CaravanData::default(),
         };
         let mob_arc = Arc::new(llama);
         let mob_weak: Weak<dyn Mob> = {
@@ -119,6 +120,18 @@ impl TraderLlamaEntity {
             let ranged_arc: Arc<dyn RangedAttackMob> = mob_arc.clone();
             Arc::downgrade(&ranged_arc)
         };
+        // Weak handle to this llama itself, needed to link it into a caravan as a tail.
+        let llama_weak: Weak<dyn EntityBase> = {
+            let entity_arc: Arc<dyn EntityBase> = mob_arc.clone();
+            Arc::downgrade(&entity_arc)
+        };
+        // Vanilla `Llama` constructor: this.getNavigation().setRequiredPathLength(40.0F)
+        mob_arc
+            .get_mob_entity()
+            .navigator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_required_path_length(40.0);
 
         {
             let mut goal_selector = mob_arc
@@ -133,17 +146,21 @@ impl TraderLlamaEntity {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             goal_selector.add_goal(0, Box::new(SwimGoal::default()));
-            // Vanilla `TraderLlama` registers a faster `PanicGoal(this, 2.0)` than the base
-            // llama's `PanicGoal(this, 1.2)`.
-            goal_selector.add_goal(1, EscapeDangerGoal::new(2.0));
-            goal_selector.add_goal(2, Box::new(LlamaFollowCaravanGoal::new(2.1)));
-            goal_selector.add_goal(2, BreedGoal::new(1.0));
+            goal_selector.add_goal(1, EscapeDangerGoal::new(1.2));
+            goal_selector.add_goal(
+                2,
+                Box::new(LlamaFollowCaravanGoal::new(
+                    llama_weak,
+                    LlamaFollowCaravanGoal::CARAVAN_SPEED_MODIFIER,
+                )),
+            );
             goal_selector.add_goal(
                 3,
                 Box::new(RangedAttackGoal::new(ranged_weak, 1.25, 40, 20.0)),
             );
-            goal_selector.add_goal(4, Box::new(TemptGoal::new(1.25, TEMPT_ITEMS, false)));
-            goal_selector.add_goal(5, Box::new(FollowParentGoal::new(1.0)));
+            goal_selector.add_goal(4, BreedGoal::new(1.0));
+            goal_selector.add_goal(5, Box::new(TemptGoal::new(1.25, TEMPT_ITEMS, false)));
+            goal_selector.add_goal(6, Box::new(FollowParentGoal::new(1.0)));
             goal_selector.add_goal(7, Box::new(WanderAroundGoal::new(0.7)));
             goal_selector.add_goal(
                 8,
@@ -156,6 +173,7 @@ impl TraderLlamaEntity {
                 2,
                 ActiveTargetGoal::with_default(&mob_arc.mob_entity, &EntityType::WOLF, true),
             );
+            // Vanilla `TraderLlama`: defend the wandering trader that leashes it.
             target_selector.add_goal(1, Box::new(TraderLlamaDefendWanderingTraderGoal::new()));
         };
 
@@ -261,6 +279,12 @@ impl AgeableMob for TraderLlamaEntity {
     }
 }
 
+impl Llama for TraderLlamaEntity {
+    fn get_caravan_data(&self) -> &CaravanData {
+        &self.caravan_data
+    }
+}
+
 impl Animal for TraderLlamaEntity {
     fn is_food(&self, item_stack: &ItemStack) -> bool {
         item_stack.item.has_tag(&tag::Item::MINECRAFT_LLAMA_FOOD)
@@ -277,11 +301,11 @@ impl Mob for TraderLlamaEntity {
         Some(self)
     }
 
-    fn as_trader_llama(&self) -> Option<&crate::entity::passive::trader_llama::TraderLlamaEntity> {
+    fn as_animal(&self) -> Option<&dyn Animal> {
         Some(self)
     }
 
-    fn as_animal(&self) -> Option<&dyn Animal> {
+    fn as_llama(&self) -> Option<&dyn Llama> {
         Some(self)
     }
 
@@ -403,9 +427,6 @@ impl RangedAttackMob for TraderLlamaEntity {
         self.spit(target);
     }
 }
-
-/// Vanilla `TraderLlama.TraderLlamaDefendWanderingTraderGoal`: while leashed to a wandering
-/// trader, this llama attacks whatever hurt the trader last.
 pub struct TraderLlamaDefendWanderingTraderGoal {
     track_target_goal: TrackTargetGoal,
     target_predicate: TargetPredicate,

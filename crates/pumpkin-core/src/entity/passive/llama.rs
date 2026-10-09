@@ -26,7 +26,6 @@ use crate::entity::{
     },
     mob::{Mob, MobEntity, RangedAttackMob},
     passive::animal::{Animal, get_carpet_color_from_item},
-    passive::trader_llama::TraderLlamaEntity,
     player::Player,
     projectile::llama_spit::LlamaSpitEntity,
 };
@@ -38,86 +37,6 @@ pub const FLAG_BRED: u8 = 8;
 pub const FLAG_EATING: u8 = 16;
 pub const FLAG_STANDING: u8 = 32;
 pub const FLAG_OPEN_MOUTH: u8 = 64;
-
-/// Vanilla `Llama` caravan state (`caravanHead`/`caravanTail`).
-///
-/// Membership only is kept: the llama ahead as a strong reference, the llama behind only as
-/// a UUID, since its identity is never read back, so mutual Arcs cannot leak. Like vanilla,
-/// nothing is persisted to NBT.
-#[derive(Default)]
-pub struct CaravanState {
-    head: Mutex<Option<Arc<dyn EntityBase>>>,
-    tail: AtomicCell<Option<Uuid>>,
-}
-
-impl CaravanState {
-    /// Vanilla `inCaravan`: this llama follows another llama.
-    pub fn in_caravan(&self) -> bool {
-        self.head
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some()
-    }
-
-    /// Vanilla `hasCaravanTail`: another llama follows this one.
-    pub fn has_caravan_tail(&self) -> bool {
-        self.tail.load().is_some()
-    }
-
-    /// Vanilla `getCaravanHead`.
-    pub fn get_caravan_head(&self) -> Option<Arc<dyn EntityBase>> {
-        self.head
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// Vanilla `joinCaravan`: this llama starts following `head`, which gains this llama as
-    /// its caravan tail.
-    pub fn join_caravan(&self, llama_uuid: Uuid, head: Arc<dyn EntityBase>) {
-        let Some(head_caravan) = llama_caravan(head.as_ref()) else {
-            return;
-        };
-        head_caravan.tail.store(Some(llama_uuid));
-        *self
-            .head
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(head);
-    }
-
-    /// Vanilla `leaveCaravan`.
-    pub fn leave_caravan(&self) {
-        let mut head = self
-            .head
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(head_entity) = head.as_ref()
-            && let Some(head_caravan) = llama_caravan(head_entity.as_ref())
-        {
-            head_caravan.tail.store(None);
-        }
-        *head = None;
-    }
-}
-
-/// Vanilla keeps the caravan state on the shared `Llama` base class, so both llama entity
-/// types carry it.
-pub(crate) fn llama_caravan(entity: &dyn EntityBase) -> Option<&CaravanState> {
-    let entity_type = entity.get_entity().entity_type;
-    if entity_type == &EntityType::LLAMA {
-        entity
-            .cast_any()
-            .downcast_ref::<LlamaEntity>()
-            .map(|llama| &llama.caravan)
-    } else if entity_type == &EntityType::TRADER_LLAMA {
-        entity
-            .cast_any()
-            .downcast_ref::<TraderLlamaEntity>()
-            .map(|llama| &llama.caravan)
-    } else {
-        None
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
@@ -157,6 +76,131 @@ impl LlamaVariant {
     }
 }
 
+/// Vanilla `Llama` caravan state: `caravan_head` is the llama this one follows,
+/// `caravan_tail` the llama following this one. Links are [`Weak`] handles so a
+/// caravan never keeps a removed entity alive.
+#[derive(Default)]
+pub struct CaravanData {
+    caravan_head: Mutex<Option<Weak<dyn EntityBase>>>,
+    caravan_tail: Mutex<Option<Weak<dyn EntityBase>>>,
+}
+
+impl CaravanData {
+    fn in_caravan(&self) -> bool {
+        self.caravan_head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    fn has_caravan_tail(&self) -> bool {
+        self.caravan_tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    fn get_caravan_head(&self) -> Option<Arc<dyn EntityBase>> {
+        let head = self
+            .caravan_head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        head.and_then(|head| head.upgrade())
+    }
+
+    fn set_caravan_head(&self, head: Option<Weak<dyn EntityBase>>) {
+        *self
+            .caravan_head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = head;
+    }
+
+    /// Claims the tail slot for `tail` if it is still free. Entities tick in parallel
+    /// on Rayon, so the check and the store have to be one atomic step; vanilla can
+    /// never observe two tails because it ticks entities sequentially.
+    fn try_claim_caravan_tail(&self, tail: Weak<dyn EntityBase>) -> bool {
+        let mut tail_slot = self
+            .caravan_tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if tail_slot.is_some() {
+            return false;
+        }
+        *tail_slot = Some(tail);
+        true
+    }
+
+    /// Clears the tail slot while it still points at `tail`; a parallel join may have
+    /// re-claimed it before this llama detached.
+    fn clear_caravan_tail_if(&self, tail: &Weak<dyn EntityBase>) {
+        let mut tail_slot = self
+            .caravan_tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if tail_slot
+            .as_ref()
+            .is_some_and(|current| Weak::ptr_eq(current, tail))
+        {
+            *tail_slot = None;
+        }
+    }
+}
+
+/// Caravan behaviour of vanilla `Llama`, shared by [`LlamaEntity`] and
+/// [`TraderLlamaEntity`](crate::entity::passive::trader_llama::TraderLlamaEntity) since a
+/// caravan may chain both entity types.
+pub trait Llama: Mob {
+    fn get_caravan_data(&self) -> &CaravanData;
+
+    /// Vanilla `Llama#inCaravan`.
+    fn in_caravan(&self) -> bool {
+        self.get_caravan_data().in_caravan()
+    }
+
+    /// Vanilla `Llama#hasCaravanTail`.
+    fn has_caravan_tail(&self) -> bool {
+        self.get_caravan_data().has_caravan_tail()
+    }
+
+    /// Vanilla `Llama#getCaravanHead`. `None` also when the head no longer exists.
+    fn get_caravan_head(&self) -> Option<Arc<dyn EntityBase>> {
+        self.get_caravan_data().get_caravan_head()
+    }
+
+    /// Vanilla `Llama#joinCaravan`: follow `head`, which records this llama as its tail.
+    /// Returns false when the head is not a llama or was claimed by another llama first.
+    /// `self_weak` must be a weak handle to this same llama so links never own entities.
+    fn join_caravan(&self, self_weak: &Weak<dyn EntityBase>, head: &Arc<dyn EntityBase>) -> bool {
+        let Some(head_llama) = head.get_mob().and_then(Mob::as_llama) else {
+            return false;
+        };
+        // Claim the tail side first, so a failed claim leaves no own state to undo.
+        if !head_llama
+            .get_caravan_data()
+            .try_claim_caravan_tail(self_weak.clone())
+        {
+            return false;
+        }
+        self.get_caravan_data()
+            .set_caravan_head(Some(Arc::downgrade(head)));
+        true
+    }
+
+    /// Vanilla `Llama#leaveCaravan`.
+    fn leave_caravan(&self, self_weak: &Weak<dyn EntityBase>) {
+        let caravan_data = self.get_caravan_data();
+        if let Some(head) = caravan_data.get_caravan_head()
+            && let Some(head_llama) = head.get_mob().and_then(Mob::as_llama)
+        {
+            head_llama
+                .get_caravan_data()
+                .clear_caravan_tail_if(self_weak);
+        }
+        caravan_data.set_caravan_head(None);
+    }
+}
+
 pub struct LlamaEntity {
     pub mob_entity: MobEntity,
     pub ageable_data: AgeableData,
@@ -167,7 +211,7 @@ pub struct LlamaEntity {
     pub has_chest: AtomicBool,
     pub temper: AtomicI32,
     pub owner: AtomicCell<Option<Uuid>>,
-    pub caravan: CaravanState,
+    pub caravan_data: CaravanData,
 }
 
 impl LlamaEntity {
@@ -187,7 +231,7 @@ impl LlamaEntity {
             has_chest: AtomicBool::new(false),
             temper: AtomicI32::new(0),
             owner: AtomicCell::new(None),
-            caravan: CaravanState::default(),
+            caravan_data: CaravanData::default(),
         };
         let mob_arc = Arc::new(llama);
         let mob_weak: Weak<dyn Mob> = {
@@ -198,6 +242,18 @@ impl LlamaEntity {
             let ranged_arc: Arc<dyn RangedAttackMob> = mob_arc.clone();
             Arc::downgrade(&ranged_arc)
         };
+        // Weak handle to this llama itself, needed to link it into a caravan as a tail.
+        let llama_weak: Weak<dyn EntityBase> = {
+            let entity_arc: Arc<dyn EntityBase> = mob_arc.clone();
+            Arc::downgrade(&entity_arc)
+        };
+        // Vanilla `Llama` constructor: this.getNavigation().setRequiredPathLength(40.0F)
+        mob_arc
+            .get_mob_entity()
+            .navigator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_required_path_length(40.0);
 
         {
             let mut goal_selector = mob_arc
@@ -213,14 +269,20 @@ impl LlamaEntity {
 
             goal_selector.add_goal(0, Box::new(SwimGoal::default()));
             goal_selector.add_goal(1, EscapeDangerGoal::new(1.2));
-            goal_selector.add_goal(2, Box::new(LlamaFollowCaravanGoal::new(2.1)));
-            goal_selector.add_goal(2, BreedGoal::new(1.0));
+            goal_selector.add_goal(
+                2,
+                Box::new(LlamaFollowCaravanGoal::new(
+                    llama_weak,
+                    LlamaFollowCaravanGoal::CARAVAN_SPEED_MODIFIER,
+                )),
+            );
             goal_selector.add_goal(
                 3,
                 Box::new(RangedAttackGoal::new(ranged_weak, 1.25, 40, 20.0)),
             );
-            goal_selector.add_goal(4, Box::new(TemptGoal::new(1.25, TEMPT_ITEMS, false)));
-            goal_selector.add_goal(5, Box::new(FollowParentGoal::new(1.0)));
+            goal_selector.add_goal(4, BreedGoal::new(1.0));
+            goal_selector.add_goal(5, Box::new(TemptGoal::new(1.25, TEMPT_ITEMS, false)));
+            goal_selector.add_goal(6, Box::new(FollowParentGoal::new(1.0)));
             goal_selector.add_goal(7, Box::new(WanderAroundGoal::new(0.7)));
             goal_selector.add_goal(
                 8,
@@ -337,6 +399,12 @@ impl AgeableMob for LlamaEntity {
     }
 }
 
+impl Llama for LlamaEntity {
+    fn get_caravan_data(&self) -> &CaravanData {
+        &self.caravan_data
+    }
+}
+
 impl Animal for LlamaEntity {
     fn is_food(&self, item_stack: &ItemStack) -> bool {
         item_stack.item.has_tag(&tag::Item::MINECRAFT_LLAMA_FOOD)
@@ -354,6 +422,10 @@ impl Mob for LlamaEntity {
     }
 
     fn as_animal(&self) -> Option<&dyn Animal> {
+        Some(self)
+    }
+
+    fn as_llama(&self) -> Option<&dyn Llama> {
         Some(self)
     }
 

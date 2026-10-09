@@ -3536,6 +3536,14 @@ impl Entity {
             .clone()
     }
 
+    /// Vanilla `Entity#getLeashHolder`.
+    pub fn get_leash_holder(&self) -> Option<Arc<dyn EntityBase>> {
+        self.leashed_to
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn is_leashed(&self) -> bool {
         self.leashed_to
             .lock()
