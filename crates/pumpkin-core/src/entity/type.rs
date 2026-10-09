@@ -65,6 +65,7 @@ use crate::entity::passive::armadillo::ArmadilloEntity;
 use crate::entity::passive::axolotl::AxolotlEntity;
 use crate::entity::passive::bee::BeeEntity;
 use crate::entity::passive::camel::CamelEntity;
+use crate::entity::passive::camel_husk::CamelHuskEntity;
 use crate::entity::passive::cat::CatEntity;
 use crate::entity::passive::chicken::ChickenEntity;
 use crate::entity::passive::cod::CodEntity;
@@ -206,6 +207,7 @@ pub fn from_type(
         id if id == EntityType::AXOLOTL.id => AxolotlEntity::new(entity),
         id if id == EntityType::BEE.id => BeeEntity::new(entity),
         id if id == EntityType::CAMEL.id => CamelEntity::new(entity),
+        id if id == EntityType::CAMEL_HUSK.id => CamelHuskEntity::new(entity),
         id if id == EntityType::COPPER_GOLEM.id => CopperGolemEntity::new(entity),
         id if id == EntityType::FROG.id => FrogEntity::new(entity),
         id if id == EntityType::GOAT.id => GoatEntity::new(entity),
