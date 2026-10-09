@@ -1,7 +1,8 @@
 use pumpkin_data::tracked_data;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
 
-use crate::entity::mob::Mob;
+use crate::entity::{EntityBase, mob::Mob};
 
 pub const BABY_START_AGE: i32 = -24000;
 pub const FORCED_AGE_PARTICLE_TICKS: i32 = 40;
@@ -96,6 +97,15 @@ pub trait AgeableMob: Mob {
         Self: Sized,
     {
         (ticks_until_adult as f32 / 20.0 * 0.1) as i32
+    }
+
+    /// Runs on the parent after shared breeding spawned `child`, so animals with extra baby
+    /// logic can customize it. Vanilla hooks this inside `AgeableMob.getBreedOffspring`.
+    fn on_child_from_breeding(
+        &self,
+        _child: &Arc<dyn EntityBase>,
+        _partner: Option<&dyn EntityBase>,
+    ) {
     }
 
     fn write_ageable_nbt(&self, nbt: &mut pumpkin_nbt::compound::NbtCompound) {

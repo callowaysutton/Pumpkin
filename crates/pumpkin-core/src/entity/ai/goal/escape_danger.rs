@@ -1,4 +1,4 @@
-use pumpkin_data::tag::{self, Taggable};
+use pumpkin_data::tag::{self, Tag, Taggable};
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 use std::sync::atomic::Ordering::Relaxed;
@@ -18,6 +18,8 @@ pub struct EscapeDangerGoal {
     goal_control: Controls,
     target: Option<Vector3<f64>>,
     running: bool,
+    /// Vanilla `PanicGoal.panicCausingDamageTypes`.
+    panic_tag: &'static Tag,
 }
 
 impl EscapeDangerGoal {
@@ -28,7 +30,15 @@ impl EscapeDangerGoal {
             goal_control: Controls::MOVE,
             target: None,
             running: false,
+            panic_tag: &tag::DamageType::MINECRAFT_PANIC_CAUSES,
         })
+    }
+
+    /// Panics only on another damage tag, like `DamageTypeTags.PANIC_ENVIRONMENTAL_CAUSES`.
+    #[must_use]
+    pub fn with_panic_tag(mut self, panic_tag: &'static Tag) -> Box<Self> {
+        self.panic_tag = panic_tag;
+        Box::new(self)
     }
 
     #[must_use]
@@ -36,17 +46,15 @@ impl EscapeDangerGoal {
         self.running
     }
 
-    /// Only `#minecraft:panic_causes` damage makes a mob flee, and only while the source is still
+    /// Only damage tagged `self.panic_tag` makes a mob flee, and only while the source is still
     /// remembered. A mob-controlled horse (vanilla `MountPanicGoal`) never panics.
-    fn should_panic(mob: &dyn Mob) -> bool {
+    fn should_panic(&self, mob: &dyn Mob) -> bool {
         !mob.is_mob_controlled()
             && mob
                 .get_mob_entity()
                 .living_entity
                 .get_last_damage_type()
-                .is_some_and(|damage_type| {
-                    damage_type.has_tag(&tag::DamageType::MINECRAFT_PANIC_CAUSES)
-                })
+                .is_some_and(|damage_type| damage_type.has_tag(self.panic_tag))
     }
 
     /// Nearest water within 5 blocks horizontally, only when the mob is not stuck in a block.
@@ -90,7 +98,7 @@ impl EscapeDangerGoal {
 
 impl Goal for EscapeDangerGoal {
     fn can_start(&mut self, mob: &dyn Mob) -> bool {
-        if !Self::should_panic(mob) {
+        if !self.should_panic(mob) {
             return false;
         }
 
