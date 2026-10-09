@@ -6,21 +6,21 @@ use pumpkin_util::text::TextComponent;
 
 use crate::entity::player::Player;
 
-use super::super::container::{self, ContainerVehicleInventory};
+use crate::entity::vehicle::container::{self, VehicleInventory};
 
 #[derive(Clone)]
 pub(super) struct ChestMinecart {
-    inventory: Arc<ContainerVehicleInventory>,
+    inventory: Arc<VehicleInventory>,
 }
 
 impl ChestMinecart {
     pub(super) fn new() -> Self {
         Self {
-            inventory: Arc::new(ContainerVehicleInventory::new(27)),
+            inventory: Arc::new(VehicleInventory::new(27)),
         }
     }
 
-    pub(super) const fn inventory(&self) -> &Arc<ContainerVehicleInventory> {
+    pub(super) const fn inventory(&self) -> &Arc<VehicleInventory> {
         &self.inventory
     }
 

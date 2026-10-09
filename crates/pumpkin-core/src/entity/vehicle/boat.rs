@@ -3,24 +3,47 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam::atomic::AtomicCell;
 
-use crate::entity::player::Player;
-use crate::entity::{Entity, EntityBase, living::LivingEntity};
-use crate::server::Server;
-
 use pumpkin_data::Block;
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::fluid::Fluid;
+use pumpkin_data::entity::EntityType;
+use pumpkin_data::game_event::GameEvent;
+use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
+use pumpkin_data::tag::{self, Taggable};
+use pumpkin_data::translation;
+
+use crate::entity::player::Player;
+use crate::entity::vehicle::container::{self, VehicleInventory};
+use crate::entity::vehicle::vehicle::VehicleEntity;
+use crate::entity::{Entity, EntityBase, living::LivingEntity};
+use crate::item::items::boat::BoatItem;
+use crate::server::Server;
+use crate::world::World;
+
+use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_protocol::java::client::play::Metadata;
+use pumpkin_util::GameMode;
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
+use pumpkin_util::text::TextComponent;
 
-use crate::entity::vehicle::vehicle::VehicleEntity;
+/// Vanilla `AbstractBoat.TIME_TO_EJECT`: underwater ticks before the passengers are
+/// ejected.
+const TIME_TO_EJECT: f32 = 60.0;
+
+/// Vanilla `AbstractBoat.PADDLE_SPEED`, the per-stroke paddle spot advance.
+const PADDLE_SPEED: f32 = std::f32::consts::PI / 8.0;
+/// The paddle sound plays when the stroke crosses `PADDLE_SOUND_TIME` in vanilla.
+const PADDLE_CHECK: f32 = std::f32::consts::PI / 4.0;
+
+/// Vanilla `AbstractBoat.getDefaultGravity`.
+const GRAVITY: f64 = 0.04;
 
 /// Vanilla `AbstractBoat.Status`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BoatStatus {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Status {
     InWater,
     UnderWater,
     UnderFlowingWater,
@@ -28,176 +51,298 @@ pub enum BoatStatus {
     InAir,
 }
 
-const PADDLE_SPEED: f32 = std::f32::consts::PI / 8.0;
-const PADDLE_SOUND_TIME: f32 = std::f32::consts::PI / 4.0;
-const TIME_TO_EJECT: f32 = 60.0;
-const DEFAULT_GRAVITY: f64 = 0.04;
-
 pub struct BoatEntity {
     pub vehicle: VehicleEntity,
+    /// Vanilla `AbstractChestBoat.itemStacks`: only the chest boat types carry one.
+    chest_inventory: Option<Arc<VehicleInventory>>,
+    /// Vanilla `AbstractBoat.dropItem`: the boat item that drops when destroyed.
+    drop_item: &'static Item,
     left_paddle_moving: AtomicBool,
     right_paddle_moving: AtomicBool,
-    // Vanilla `AbstractBoat` physics state.
-    status: AtomicCell<BoatStatus>,
-    old_status: AtomicCell<BoatStatus>,
+    old_status: AtomicCell<Status>,
+    status: AtomicCell<Status>,
     out_of_control_ticks: AtomicCell<f32>,
+    delta_rotation: AtomicCell<f32>,
     water_level: AtomicCell<f64>,
     land_friction: AtomicCell<f32>,
+    /// Vanilla `AbstractBoat.lastYd`, written inside `checkFallDamage` during `move`.
     last_yd: AtomicCell<f64>,
-    left_paddle_pos: AtomicCell<f32>,
-    right_paddle_pos: AtomicCell<f32>,
+    paddle_positions: [AtomicCell<f32>; 2],
+}
+
+/// Vanilla picks the container variants structurally (`instanceof AbstractChestBoat`;
+/// there is no entity type tag for them).
+const fn is_chest_boat(id: u16) -> bool {
+    id == EntityType::OAK_CHEST_BOAT.id
+        || id == EntityType::SPRUCE_CHEST_BOAT.id
+        || id == EntityType::BIRCH_CHEST_BOAT.id
+        || id == EntityType::JUNGLE_CHEST_BOAT.id
+        || id == EntityType::ACACIA_CHEST_BOAT.id
+        || id == EntityType::DARK_OAK_CHEST_BOAT.id
+        || id == EntityType::MANGROVE_CHEST_BOAT.id
+        || id == EntityType::CHERRY_CHEST_BOAT.id
+        || id == EntityType::PALE_OAK_CHEST_BOAT.id
+        || id == EntityType::POPLAR_CHEST_BOAT.id
+        || id == EntityType::BAMBOO_CHEST_RAFT.id
+}
+
+const fn is_boat_type(id: u16) -> bool {
+    id == EntityType::OAK_BOAT.id
+        || id == EntityType::OAK_CHEST_BOAT.id
+        || id == EntityType::SPRUCE_BOAT.id
+        || id == EntityType::SPRUCE_CHEST_BOAT.id
+        || id == EntityType::BIRCH_BOAT.id
+        || id == EntityType::BIRCH_CHEST_BOAT.id
+        || id == EntityType::JUNGLE_BOAT.id
+        || id == EntityType::JUNGLE_CHEST_BOAT.id
+        || id == EntityType::ACACIA_BOAT.id
+        || id == EntityType::ACACIA_CHEST_BOAT.id
+        || id == EntityType::DARK_OAK_BOAT.id
+        || id == EntityType::DARK_OAK_CHEST_BOAT.id
+        || id == EntityType::MANGROVE_BOAT.id
+        || id == EntityType::MANGROVE_CHEST_BOAT.id
+        || id == EntityType::CHERRY_BOAT.id
+        || id == EntityType::CHERRY_CHEST_BOAT.id
+        || id == EntityType::PALE_OAK_BOAT.id
+        || id == EntityType::PALE_OAK_CHEST_BOAT.id
+        || id == EntityType::POPLAR_BOAT.id
+        || id == EntityType::POPLAR_CHEST_BOAT.id
+        || id == EntityType::BAMBOO_RAFT.id
+        || id == EntityType::BAMBOO_CHEST_RAFT.id
 }
 
 impl BoatEntity {
-    pub const fn new(entity: Entity) -> Self {
+    pub fn new(entity: Entity) -> Self {
+        let chest_inventory =
+            is_chest_boat(entity.entity_type.id).then(|| Arc::new(VehicleInventory::new(27)));
+        let drop_item = BoatItem::entity_to_item(entity.entity_type);
         Self {
             vehicle: VehicleEntity::new(entity),
+            chest_inventory,
+            drop_item,
             left_paddle_moving: AtomicBool::new(false),
             right_paddle_moving: AtomicBool::new(false),
-            status: AtomicCell::new(BoatStatus::InAir),
-            old_status: AtomicCell::new(BoatStatus::InAir),
+            old_status: AtomicCell::new(Status::InAir),
+            status: AtomicCell::new(Status::InAir),
             out_of_control_ticks: AtomicCell::new(0.0),
+            delta_rotation: AtomicCell::new(0.0),
             water_level: AtomicCell::new(0.0),
-            land_friction: AtomicCell::new(0.6),
+            land_friction: AtomicCell::new(0.0),
             last_yd: AtomicCell::new(0.0),
-            left_paddle_pos: AtomicCell::new(0.0),
-            right_paddle_pos: AtomicCell::new(0.0),
+            paddle_positions: [AtomicCell::new(0.0), AtomicCell::new(0.0)],
         }
-    }
-
-    fn get_paddle_state(&self, side: usize) -> bool {
-        let state = if side == 0 {
-            self.left_paddle_moving.load(Ordering::Relaxed)
-        } else {
-            self.right_paddle_moving.load(Ordering::Relaxed)
-        };
-        state && self.has_controlling_passenger()
     }
 
     pub fn set_paddles(&self, left: bool, right: bool) {
-        if self.left_paddle_moving.load(Ordering::Relaxed) == left
-            && self.right_paddle_moving.load(Ordering::Relaxed) == right
-        {
-            return;
-        }
-        self.left_paddle_moving.store(left, Ordering::Relaxed);
-        self.right_paddle_moving.store(right, Ordering::Relaxed);
+        let left_changed = self.left_paddle_moving.swap(left, Ordering::Relaxed) != left;
+        let right_changed = self.right_paddle_moving.swap(right, Ordering::Relaxed) != right;
 
-        self.vehicle.entity.send_meta_data(
-            &[
-                Metadata::new(pumpkin_data::tracked_data::boat::ID_PADDLE_LEFT, left),
-                Metadata::new(pumpkin_data::tracked_data::boat::ID_PADDLE_RIGHT, right),
-            ],
-            None,
-        );
+        if left_changed || right_changed {
+            self.vehicle.entity.send_meta_data(
+                &[
+                    Metadata::new(pumpkin_data::tracked_data::boat::ID_PADDLE_LEFT, left),
+                    Metadata::new(pumpkin_data::tracked_data::boat::ID_PADDLE_RIGHT, right),
+                ],
+                None,
+            );
+        }
     }
 
     fn send_wobble_metadata(&self) {
         self.vehicle.send_wobble_metadata();
     }
 
-    fn has_controlling_passenger(&self) -> bool {
-        self.vehicle
+    /// Vanilla `AbstractBoat.getControllingPassenger`: the first passenger when it is a
+    /// `Player`, otherwise the (empty) `Entity` default. `Entity.isClientAuthoritative`
+    /// is true for every player, so the boat is server-driven exactly when this is
+    /// `None`.
+    fn get_controlling_player(&self) -> Option<Arc<dyn EntityBase>> {
+        let passengers = self
+            .vehicle
+            .entity
+            .passengers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        passengers
+            .first()
+            .filter(|passenger| passenger.get_player().is_some())
+            .cloned()
+    }
+
+    /// Vanilla `AbstractBoat.getMaxPassengers`: two for boats, one for chest boats.
+    const fn max_passengers(&self) -> usize {
+        if self.chest_inventory.is_some() { 1 } else { 2 }
+    }
+
+    /// Vanilla `AbstractBoat.canAddPassenger`.
+    fn can_add_passenger(&self) -> bool {
+        let passenger_count = self
+            .vehicle
             .entity
             .passengers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .first()
-            .is_some_and(|passenger| passenger.get_player().is_some())
+            .len();
+        passenger_count < self.max_passengers() && !self.vehicle.entity.is_submerged_in_water()
     }
 
-    /// Vanilla `AbstractBoat.isUnderwater`.
-    fn is_underwater(&self) -> Option<BoatStatus> {
-        let world = self.vehicle.entity.world.load();
-        let aabb = self.vehicle.entity.bounding_box.load();
-        let max_y = aabb.max.y + 0.001;
-        let x0 = aabb.min.x.floor() as i32;
-        let x1 = aabb.max.x.ceil() as i32;
-        let y0 = aabb.max.y.floor() as i32;
-        let y1 = max_y.ceil() as i32;
-        let z0 = aabb.min.z.floor() as i32;
-        let z1 = aabb.max.z.ceil() as i32;
-        let mut under_water = false;
+    fn get_status(&self) -> Status {
+        let entity = &self.vehicle.entity;
+        let bbox = entity.bounding_box.load();
+        let world = entity.world.load();
 
-        for x in x0..x1 {
-            for y in y0..y1 {
-                for z in z0..z1 {
-                    let pos = BlockPos(Vector3::new(x, y, z));
-                    let (fluid, fluid_state) = world.get_fluid_and_fluid_state(&pos);
-                    if fluid.matches_type(&Fluid::WATER)
-                        && max_y
-                            < f64::from(y)
-                                + f64::from(world.get_fluid_height(&pos, fluid, &fluid_state))
+        if let Some(status) = Self::is_underwater(&world, &bbox) {
+            self.water_level.store(bbox.max.y);
+            return status;
+        }
+
+        if self.check_in_water(&world, &bbox) {
+            return Status::InWater;
+        }
+
+        let friction = Self::get_ground_friction(&world, &bbox);
+        if friction > 0.0 {
+            self.land_friction.store(friction);
+            return Status::OnLand;
+        }
+
+        Status::InAir
+    }
+
+    /// Vanilla `AbstractBoat.isUnderwater`, returning None where the Java method returns
+    /// null.
+    fn is_underwater(world: &Arc<World>, bbox: &BoundingBox) -> Option<Status> {
+        let max_y = bbox.max.y + 0.001;
+        let min_x = bbox.min.x.floor() as i32;
+        let max_x = bbox.max.x.ceil() as i32;
+        let min_y = bbox.max.y.floor() as i32;
+        let max_y_bound = max_y.ceil() as i32;
+        let min_z = bbox.min.z.floor() as i32;
+        let max_z = bbox.max.z.ceil() as i32;
+
+        let mut under_water = false;
+        for x in min_x..max_x {
+            for y in min_y..max_y_bound {
+                for z in min_z..max_z {
+                    let block_pos = BlockPos(Vector3::new(x, y, z));
+                    let (fluid, state) = world.get_fluid_and_fluid_state(&block_pos);
+                    if fluid.has_tag(&tag::Fluid::MINECRAFT_WATER)
+                        && max_y < f64::from(block_pos.0.y) + f64::from(state.height)
                     {
-                        if !fluid_state.is_source {
-                            return Some(BoatStatus::UnderFlowingWater);
+                        if !state.is_source {
+                            return Some(Status::UnderFlowingWater);
                         }
                         under_water = true;
                     }
                 }
             }
         }
-
-        under_water.then_some(BoatStatus::UnderWater)
+        under_water.then_some(Status::UnderWater)
     }
 
-    /// Vanilla `AbstractBoat.checkInWater`.
-    fn check_in_water(&self) -> bool {
-        let world = self.vehicle.entity.world.load();
-        let bb = self.vehicle.entity.bounding_box.load();
-        let min_x = bb.min.x.floor() as i32;
-        let max_x = bb.max.x.ceil() as i32;
-        let min_y = bb.min.y.floor() as i32;
-        let max_y = (bb.min.y + 0.001).ceil() as i32;
-        let min_z = bb.min.z.floor() as i32;
-        let max_z = bb.max.z.ceil() as i32;
-        let mut in_water = false;
-        let mut water_level = f64::MIN;
+    /// Vanilla `AbstractBoat.checkInWater`, including its `waterLevel` side effect.
+    fn check_in_water(&self, world: &Arc<World>, bbox: &BoundingBox) -> bool {
+        let min_x = bbox.min.x.floor() as i32;
+        let max_x = bbox.max.x.ceil() as i32;
+        let min_y = bbox.min.y.floor() as i32;
+        let max_y_bound = (bbox.min.y + 0.001).ceil() as i32;
+        let min_z = bbox.min.z.floor() as i32;
+        let max_z = bbox.max.z.ceil() as i32;
 
+        let mut in_water = false;
+        let mut water_level = f64::NEG_INFINITY;
         for x in min_x..max_x {
-            for y in min_y..max_y {
+            for y in min_y..max_y_bound {
                 for z in min_z..max_z {
-                    let pos = BlockPos(Vector3::new(x, y, z));
-                    let (fluid, fluid_state) = world.get_fluid_and_fluid_state(&pos);
-                    if fluid.matches_type(&Fluid::WATER) {
-                        let height = f64::from(y)
-                            + f64::from(world.get_fluid_height(&pos, fluid, &fluid_state));
+                    let block_pos = BlockPos(Vector3::new(x, y, z));
+                    let (fluid, state) = world.get_fluid_and_fluid_state(&block_pos);
+                    if fluid.has_tag(&tag::Fluid::MINECRAFT_WATER) {
+                        let height = f64::from(block_pos.0.y) + f64::from(state.height);
                         water_level = water_level.max(height);
-                        in_water |= bb.min.y < height;
+                        in_water |= bbox.min.y < height;
+                    }
+                }
+            }
+        }
+        self.water_level.store(water_level);
+        in_water
+    }
+
+    /// Vanilla `AbstractBoat.getGroundFriction`: average friction of the blocks whose
+    /// collision shape intersects the slab under the boat, ignoring lily pads.
+    fn get_ground_friction(world: &Arc<World>, bbox: &BoundingBox) -> f32 {
+        let friction_box = BoundingBox::new(
+            Vector3::new(bbox.min.x, bbox.min.y - 0.001, bbox.min.z),
+            Vector3::new(bbox.max.x, bbox.min.y, bbox.max.z),
+        );
+
+        let x0 = friction_box.min.x.floor() as i32 - 1;
+        let x1 = friction_box.max.x.ceil() as i32 + 1;
+        let y0 = friction_box.min.y.floor() as i32 - 1;
+        let y1 = friction_box.max.y.ceil() as i32 + 1;
+        let z0 = friction_box.min.z.floor() as i32 - 1;
+        let z1 = friction_box.max.z.ceil() as i32 + 1;
+
+        let mut friction = 0.0f32;
+        let mut count = 0;
+
+        for x in x0..x1 {
+            let x_edge = usize::from(x != x0 && x != x1 - 1);
+            for z in z0..z1 {
+                let edges = x_edge + usize::from(z != z0 && z != z1 - 1);
+                if edges == 2 {
+                    continue;
+                }
+
+                for y in y0..y1 {
+                    if edges == 0 || (y != y0 && y != y1 - 1) {
+                        let block_pos = BlockPos(Vector3::new(x, y, z));
+                        let state = world.get_block_state(&block_pos);
+                        if state.is_air() {
+                            continue;
+                        }
+
+                        let block = Block::from_state_id(state.id);
+                        if block == &Block::LILY_PAD {
+                            continue;
+                        }
+
+                        for shape in state.get_block_collision_shapes_at(&block_pos) {
+                            if shape.at_pos(block_pos).intersects(&friction_box) {
+                                friction += block.slipperiness;
+                                count += 1;
+                                break;
+                            }
+                        }
                     }
                 }
             }
         }
 
-        self.water_level.store(water_level);
-        in_water
+        friction / count as f32
     }
 
     /// Vanilla `AbstractBoat.getWaterLevelAbove`.
-    fn get_water_level_above(&self) -> f32 {
-        let world = self.vehicle.entity.world.load();
-        let aabb = self.vehicle.entity.bounding_box.load();
-        let min_x = aabb.min.x.floor() as i32;
-        let max_x = aabb.max.x.ceil() as i32;
-        let min_y = aabb.max.y.floor() as i32;
-        let max_y = (aabb.max.y - self.last_yd.load()).ceil() as i32;
-        let min_z = aabb.min.z.floor() as i32;
-        let max_z = aabb.max.z.ceil() as i32;
+    fn get_water_level_above(&self, world: &Arc<World>) -> f32 {
+        let bbox = self.vehicle.entity.bounding_box.load();
+        let min_x = bbox.min.x.floor() as i32;
+        let max_x = bbox.max.x.ceil() as i32;
+        let min_y = bbox.max.y.floor() as i32;
+        let max_y = (bbox.max.y - self.last_yd.load()).ceil() as i32;
+        let min_z = bbox.min.z.floor() as i32;
+        let max_z = bbox.max.z.ceil() as i32;
 
-        'outer: for y in min_y..max_y {
+        for y in min_y..max_y {
             let mut block_height = 0.0f32;
-
             for x in min_x..max_x {
                 for z in min_z..max_z {
-                    let pos = BlockPos(Vector3::new(x, y, z));
-                    let (fluid, fluid_state) = world.get_fluid_and_fluid_state(&pos);
-                    if fluid.matches_type(&Fluid::WATER) {
-                        block_height =
-                            block_height.max(world.get_fluid_height(&pos, fluid, &fluid_state));
+                    let block_pos = BlockPos(Vector3::new(x, y, z));
+                    let (fluid, state) = world.get_fluid_and_fluid_state(&block_pos);
+                    if fluid.has_tag(&tag::Fluid::MINECRAFT_WATER) {
+                        block_height = block_height.max(state.height);
                     }
-
                     if block_height >= 1.0 {
-                        continue 'outer;
+                        break;
                     }
                 }
             }
@@ -207,158 +352,91 @@ impl BoatEntity {
             }
         }
 
-        (max_y + 1) as f32
-    }
-
-    /// Vanilla `AbstractBoat.getGroundFriction`.
-    fn get_ground_friction(&self) -> f32 {
-        let world = self.vehicle.entity.world.load();
-        let bb = self.vehicle.entity.bounding_box.load();
-        let box_min_y = bb.min.y - 0.001;
-        let x0 = bb.min.x.floor() as i32 - 1;
-        let x1 = bb.max.x.ceil() as i32 + 1;
-        let y0 = box_min_y.floor() as i32 - 1;
-        let y1 = bb.min.y.ceil() as i32 + 1;
-        let z0 = bb.min.z.floor() as i32 - 1;
-        let z1 = bb.max.z.ceil() as i32 + 1;
-        let boat_box = pumpkin_util::math::boundingbox::BoundingBox::new(
-            Vector3::new(bb.min.x, box_min_y, bb.min.z),
-            Vector3::new(bb.max.x, bb.min.y, bb.max.z),
-        );
-        let mut friction = 0.0f32;
-        let mut count = 0;
-
-        for x in x0..x1 {
-            for z in z0..z1 {
-                let edges = i32::from(x == x0 || x == x1 - 1) + i32::from(z == z0 || z == z1 - 1);
-                if edges != 2 {
-                    for y in y0..y1 {
-                        if edges <= 0 || (y != y0 && y != y1 - 1) {
-                            let pos = BlockPos(Vector3::new(x, y, z));
-                            let state = world.get_block_state(&pos);
-                            let block = Block::from_state_id(state.id);
-                            if block == &Block::LILY_PAD {
-                                continue;
-                            }
-                            if state
-                                .get_block_collision_shapes_at(&pos)
-                                .any(|shape| shapes_join_is_not_empty(shape, boat_box))
-                            {
-                                friction += block.slipperiness;
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if count == 0 {
-            0.0
-        } else {
-            friction / count as f32
-        }
-    }
-
-    /// Vanilla `AbstractBoat.getStatus`.
-    fn get_status(&self) -> BoatStatus {
-        if let Some(water_status) = self.is_underwater() {
-            let bb = self.vehicle.entity.bounding_box.load();
-            self.water_level.store(bb.max.y);
-            return water_status;
-        }
-
-        if self.check_in_water() {
-            return BoatStatus::InWater;
-        }
-
-        let friction = self.get_ground_friction();
-        if friction > 0.0 {
-            self.land_friction.store(friction);
-            BoatStatus::OnLand
-        } else {
-            BoatStatus::InAir
-        }
+        max_y as f32 + 1.0
     }
 
     /// Vanilla `AbstractBoat.floatBoat`.
     fn float_boat(&self) {
+        let mut vspeed = -self.get_gravity();
+        let mut buoyancy = 0.0;
+        let inv_friction;
+
         let entity = &self.vehicle.entity;
-        let mut vspeed = -DEFAULT_GRAVITY;
-        let mut buoyancy = 0.0f64;
-
-        let status = self.status.load();
         let old_status = self.old_status.load();
+        let status = self.status.load();
+        let pos = entity.pos.load();
+        let bbox = entity.bounding_box.load();
+        let bb_height = bbox.max.y - bbox.min.y;
 
-        if old_status == BoatStatus::InAir
-            && status != BoatStatus::InAir
-            && status != BoatStatus::OnLand
-        {
-            let bb = entity.bounding_box.load();
-            self.water_level.store(bb.max.y);
-            let target_y = f64::from(self.get_water_level_above())
-                - f64::from(entity.entity_dimension.load().height)
-                + 0.101;
-            let delta = Vector3::new(0.0, target_y - bb.min.y, 0.0);
-            let test_box = bb.offset(pumpkin_util::math::boundingbox::BoundingBox::new(
-                delta, delta,
-            ));
-            let world = entity.world.load();
-            if world.is_space_empty(test_box) {
-                entity.set_pos(Vector3::new(
-                    entity.pos.load().x,
-                    target_y,
-                    entity.pos.load().z,
-                ));
-                let movement = entity.velocity.load();
+        if old_status == Status::InAir && status != Status::InAir && status != Status::OnLand {
+            // Falling into water: catch the boat on the water surface.
+            self.water_level.store(pos.y + bb_height);
+            let target_y =
+                f64::from(self.get_water_level_above(&entity.world.load())) - bb_height + 0.101;
+            let moved_box = bbox.shift(Vector3::new(0.0, target_y - pos.y, 0.0));
+            if entity.world.load().is_space_empty(moved_box) {
+                entity.set_pos(Vector3::new(pos.x, target_y, pos.z));
+                let velocity = entity.velocity.load();
                 entity
                     .velocity
-                    .store(Vector3::new(movement.x, 0.0, movement.z));
+                    .store(Vector3::new(velocity.x, 0.0, velocity.z));
                 self.last_yd.store(0.0);
             }
 
-            self.status.store(BoatStatus::InWater);
+            self.status.store(Status::InWater);
         } else {
-            let inv_friction = match status {
-                BoatStatus::InWater => {
-                    let bb = entity.bounding_box.load();
-                    buoyancy = (self.water_level.load() - bb.min.y)
-                        / f64::from(entity.entity_dimension.load().height);
-                    0.9
+            match status {
+                Status::InWater => {
+                    buoyancy = (self.water_level.load() - pos.y) / bb_height;
+                    inv_friction = 0.9;
                 }
-                BoatStatus::UnderFlowingWater => {
-                    vspeed = -7.0E-4;
-                    0.9
+                Status::UnderFlowingWater => {
+                    vspeed = -7.0e-4;
+                    inv_friction = 0.9;
                 }
-                BoatStatus::UnderWater => {
+                Status::UnderWater => {
                     buoyancy = 0.01;
-                    0.45
+                    inv_friction = 0.45;
                 }
-                BoatStatus::InAir => 0.9,
-                BoatStatus::OnLand => {
-                    let friction = self.land_friction.load();
-                    if self.has_controlling_passenger() {
-                        self.land_friction.store(friction / 2.0);
+                Status::InAir => {
+                    inv_friction = 0.9;
+                }
+                Status::OnLand => {
+                    inv_friction = self.land_friction.load();
+                    if self.get_controlling_player().is_some() {
+                        self.land_friction.store(inv_friction / 2.0);
                     }
-                    friction
                 }
-            };
+            }
 
-            let movement = entity.velocity.load();
+            let velocity = entity.velocity.load();
             entity.velocity.store(Vector3::new(
-                movement.x * f64::from(inv_friction),
-                movement.y + vspeed,
-                movement.z * f64::from(inv_friction),
+                velocity.x * f64::from(inv_friction),
+                velocity.y + vspeed,
+                velocity.z * f64::from(inv_friction),
             ));
+            self.delta_rotation
+                .store(self.delta_rotation.load() * inv_friction);
 
             if buoyancy > 0.0 {
-                let movement = entity.velocity.load();
+                let velocity = entity.velocity.load();
                 entity.velocity.store(Vector3::new(
-                    movement.x,
-                    (movement.y + buoyancy * (DEFAULT_GRAVITY / 0.65)) * 0.75,
-                    movement.z,
+                    velocity.x,
+                    (velocity.y + buoyancy * (self.get_gravity() / 0.65)) * 0.75,
+                    velocity.z,
                 ));
             }
+        }
+    }
+
+    /// Vanilla `AbstractBoat.getPaddleSound`.
+    fn get_paddle_sound(&self) -> Option<Sound> {
+        match self.status.load() {
+            Status::InWater | Status::UnderWater | Status::UnderFlowingWater => {
+                Some(Sound::EntityBoatPaddleWater)
+            }
+            Status::OnLand => Some(Sound::EntityBoatPaddleLand),
+            Status::InAir => None,
         }
     }
 
@@ -377,25 +455,41 @@ impl BoatEntity {
         }
     }
 
-    /// Vanilla `AbstractBoat.getPaddleSound`.
-    fn get_paddle_sound(&self) -> Option<Sound> {
-        match self.status.load() {
-            BoatStatus::InWater | BoatStatus::UnderWater | BoatStatus::UnderFlowingWater => {
-                Some(Sound::EntityBoatPaddleWater)
-            }
-            BoatStatus::OnLand => Some(Sound::EntityBoatPaddleLand),
-            BoatStatus::InAir => None,
-        }
+    /// Vanilla `AbstractBoat.hasEnoughSpaceFor`.
+    fn has_enough_space_for(&self, other: &dyn EntityBase) -> bool {
+        let self_bb = self.vehicle.entity.bounding_box.load();
+        let other_bb = other.get_entity().bounding_box.load();
+        other_bb.max.x - other_bb.min.x < self_bb.max.x - self_bb.min.x
     }
-}
 
-/// Vanilla `Shapes.joinIsNotEmpty(blockShape, boatShape, BooleanOp.AND)` — true when
-/// the two axis-aligned boxes overlap.
-fn shapes_join_is_not_empty(
-    block_shape: pumpkin_util::math::boundingbox::BoundingBox,
-    boat_shape: pumpkin_util::math::boundingbox::BoundingBox,
-) -> bool {
-    block_shape.intersects(&boat_shape)
+    /// Vanilla `AbstractBoat.interactWithContainerVehicle` through
+    /// `AbstractChestBoat.interact`.
+    fn interact_with_container_vehicle(&self, player: &Arc<Player>) -> bool {
+        let Some(inventory) = &self.chest_inventory else {
+            return false;
+        };
+
+        let custom_name = self.vehicle.entity.custom_name.load().as_ref().clone();
+        let opened = container::open(
+            custom_name,
+            player,
+            inventory,
+            TextComponent::translate_cross(
+                translation::java::ENTITY_MINECRAFT_CHEST_BOAT,
+                translation::bedrock::ENTITY_CHEST_BOAT_NAME,
+                [],
+            ),
+            false,
+        );
+        if opened {
+            let world = self.vehicle.entity.world.load();
+            world.emit_game_event(
+                GameEvent::ContainerOpen.name(),
+                self.vehicle.entity.pos.load(),
+            );
+        }
+        opened
+    }
 }
 
 impl EntityBase for BoatEntity {
@@ -407,86 +501,152 @@ impl EntityBase for BoatEntity {
         None
     }
 
+    /// Vanilla `AbstractBoat.getDefaultGravity` through `Entity.getGravity`.
     fn get_gravity(&self) -> f64 {
-        DEFAULT_GRAVITY
+        if self.vehicle.entity.has_no_gravity() {
+            0.0
+        } else {
+            GRAVITY
+        }
     }
 
-    fn tick(&self, caller: &dyn EntityBase, server: &Server) {
+    /// Vanilla `AbstractBoat.tick`. It is longer than 100 lines to keep the port
+    /// readable next to the Java method.
+    #[allow(clippy::too_many_lines)]
+    fn tick(&self, caller: &dyn EntityBase, _server: &Server) {
         self.vehicle.tick();
-        // Vanilla `Entity.tick` base bookkeeping (position history, portals, fire).
-        self.vehicle.entity.tick(caller, server);
 
+        let world = self.vehicle.entity.world.load();
+
+        // Vanilla `AbstractBoat.tick`: status update, out-of-control passenger ejection.
         self.old_status.store(self.status.load());
-        self.status.store(self.get_status());
+        let status = self.get_status();
+        self.status.store(status);
 
-        let status = self.status.load();
-        if status != BoatStatus::UnderWater && status != BoatStatus::UnderFlowingWater {
-            self.out_of_control_ticks.store(0.0);
+        let out_of_control = if status == Status::UnderWater || status == Status::UnderFlowingWater
+        {
+            self.out_of_control_ticks.load() + 1.0
         } else {
-            self.out_of_control_ticks
-                .store(self.out_of_control_ticks.load() + 1.0);
-        }
-
-        if self.out_of_control_ticks.load() >= TIME_TO_EJECT {
+            0.0
+        };
+        self.out_of_control_ticks.store(out_of_control);
+        if out_of_control >= TIME_TO_EJECT {
             self.eject_passengers();
         }
 
-        if !self.has_controlling_passenger() {
+        if self.get_controlling_player().is_none() {
+            // Vanilla `AbstractBoat.tick` server-authoritative path: paddles off,
+            // float, move. The player-driven path is client authoritative and syncs
+            // through the MoveVehicle packet.
             self.set_paddles(false, false);
+            self.float_boat();
+            // Vanilla `checkFallDamage`: `lastYd` takes the pre-move vertical motion.
+            self.last_yd.store(self.vehicle.entity.velocity.load().y);
+            let motion = self.vehicle.entity.velocity.load();
+            self.move_entity(caller, motion);
+
+            // Keep passenger positions in step with the moved boat while the boat is
+            // server-driven (same pattern as the minecart).
+            let new_pos = self.vehicle.entity.pos.load();
+            if let Ok(passengers) = self.vehicle.entity.passengers.try_lock() {
+                for passenger in passengers.iter() {
+                    passenger.get_entity().set_pos(new_pos);
+                }
+            }
+        } else {
+            self.vehicle
+                .entity
+                .velocity
+                .store(Vector3::new(0.0, 0.0, 0.0));
+            self.delta_rotation.store(0.0);
         }
 
-        self.float_boat();
-        self.vehicle
-            .entity
-            .move_entity(caller, self.vehicle.entity.velocity.load());
-        // Vanilla `AbstractBoat.checkFallDamage` stores the vertical delta here; Pumpkin
-        // has no per-move fall hook, so approximate it with the post-move Y velocity.
-        self.last_yd.store(self.vehicle.entity.velocity.load().y);
-
-        // Vanilla ticks paddle sounds/rotations after movement.
-        for i in 0..=1 {
-            if self.get_paddle_state(i) {
-                let paddle_pos = if i == 0 {
-                    self.left_paddle_pos.load()
-                } else {
-                    self.right_paddle_pos.load()
-                };
-                if paddle_pos % (std::f32::consts::PI * 2.0) <= PADDLE_SOUND_TIME
-                    && (paddle_pos + PADDLE_SPEED) % (std::f32::consts::PI * 2.0)
-                        >= PADDLE_SOUND_TIME
-                    && let Some(sound) = self.get_paddle_sound()
-                {
-                    let entity = &self.vehicle.entity;
-                    let view_vector =
-                        Vector3::from_yaw_pitch(entity.yaw.load(), entity.pitch.load());
-                    let dx = if i == 1 {
-                        -view_vector.z
-                    } else {
-                        view_vector.z
-                    };
-                    let dz = if i == 1 {
-                        view_vector.x
-                    } else {
-                        -view_vector.x
-                    };
-                    let pos = entity.pos.load();
-                    entity.world.load().play_sound(
-                        sound,
-                        SoundCategory::Neutral,
-                        &Vector3::new(pos.x + dx, pos.y, pos.z + dz),
-                    );
-                }
-
-                let new_pos = paddle_pos + PADDLE_SPEED;
-                if i == 0 {
-                    self.left_paddle_pos.store(new_pos);
-                } else {
-                    self.right_paddle_pos.store(new_pos);
-                }
-            } else if i == 0 {
-                self.left_paddle_pos.store(0.0);
+        // Vanilla paddle positions and sounds. The server plays the sounds; paddle
+        // acceleration (`controlBoat`) only runs on the controlling player's client.
+        for i in 0..2 {
+            let paddle_moving = if i == 0 {
+                self.left_paddle_moving.load(Ordering::Relaxed)
             } else {
-                self.right_paddle_pos.store(0.0);
+                self.right_paddle_moving.load(Ordering::Relaxed)
+            };
+
+            if paddle_moving && self.get_controlling_player().is_some() {
+                if !self.vehicle.entity.is_silent() {
+                    let paddle_pos = self.paddle_positions[i].load();
+                    if paddle_pos % (std::f32::consts::PI * 2.0) <= PADDLE_CHECK
+                        && (paddle_pos + PADDLE_SPEED) % (std::f32::consts::PI * 2.0)
+                            >= PADDLE_CHECK
+                        && let Some(sound) = self.get_paddle_sound()
+                    {
+                        let entity = &self.vehicle.entity;
+                        let view = Vector3::rotation_vector(
+                            f64::from(entity.pitch.load()),
+                            f64::from(entity.yaw.load()),
+                        );
+                        let (dx, dz) = if i == 1 {
+                            (-view.z, view.x)
+                        } else {
+                            (view.z, -view.x)
+                        };
+                        let pos = entity.pos.load();
+                        world.play_sound_fine(
+                            sound,
+                            SoundCategory::Neutral,
+                            &Vector3::new(pos.x + dx, pos.y, pos.z + dz),
+                            1.0,
+                            0.8 + 0.4 * rand::random::<f32>(),
+                        );
+                    }
+                }
+                self.paddle_positions[i].store(self.paddle_positions[i].load() + PADDLE_SPEED);
+            } else {
+                self.paddle_positions[i].store(0.0);
+            }
+        }
+
+        // Vanilla entity scan: entities in the inflated box are pushed, or picked up
+        // as passengers by unattended boats.
+        let inflated = self
+            .vehicle
+            .entity
+            .bounding_box
+            .load()
+            .expand(0.2, -0.01, 0.2);
+        let entities = world.get_entities_at_box(&inflated);
+        if !entities.is_empty() {
+            // Vanilla `EntitySelector.pushableBy(this)`.
+            let add_new_passengers = self.get_controlling_player().is_none();
+            let self_id = self.vehicle.entity.entity_id;
+            for entity in entities {
+                if !entity.is_pushable()
+                    || entity.is_spectator()
+                    || entity.get_entity().entity_id == self_id
+                    || entity.has_passenger(self)
+                    || self
+                        .vehicle
+                        .entity
+                        .has_passenger(entity.get_entity().entity_id)
+                {
+                    continue;
+                }
+
+                if add_new_passengers
+                    && self.can_add_passenger()
+                    && !entity.is_passenger()
+                    && self.has_enough_space_for(&*entity)
+                    && entity.get_living_entity().is_some()
+                    && !entity
+                        .get_entity()
+                        .entity_type
+                        .has_tag(&tag::EntityType::MINECRAFT_CANNOT_BE_PUSHED_ONTO_BOATS)
+                {
+                    let Some(vehicle) = world.get_entity_by_id(self_id) else {
+                        continue;
+                    };
+                    entity.get_entity().add_passenger(vehicle, entity.clone());
+                } else {
+                    self.push(&*entity);
+                }
             }
         }
     }
@@ -503,6 +663,109 @@ impl EntityBase for BoatEntity {
         true
     }
 
+    /// Vanilla `AbstractBoat.push`: boats only displace each other when their boxes
+    /// overlap vertically; everything else only when it sits at or below the boat.
+    fn push(&self, entity: &dyn EntityBase) {
+        let self_entity = self.get_entity();
+        let other_entity = entity.get_entity();
+
+        if self_entity.no_physics.load(Ordering::Relaxed)
+            || other_entity.no_physics.load(Ordering::Relaxed)
+        {
+            return;
+        }
+
+        let self_bb = self_entity.bounding_box.load();
+        let other_bb = other_entity.bounding_box.load();
+        let can_push = if is_boat_type(other_entity.entity_type.id) {
+            other_bb.min.y < self_bb.max.y
+        } else {
+            other_bb.min.y <= self_bb.min.y
+        };
+        if !can_push
+            || self_entity.has_passenger(other_entity.entity_id)
+            || other_entity.has_passenger(self_entity.entity_id)
+        {
+            return;
+        }
+
+        let mut dx = other_entity.pos.load().x - self_entity.pos.load().x;
+        let mut dz = other_entity.pos.load().z - self_entity.pos.load().z;
+        let mut d = dx.abs().max(dz.abs());
+        if d < 0.01 {
+            return;
+        }
+        d = d.sqrt();
+        dx /= d;
+        dz /= d;
+        let mut pow = 1.0 / d;
+        if pow > 1.0 {
+            pow = 1.0;
+        }
+        dx *= pow * 0.05;
+        dz *= pow * 0.05;
+
+        if !self_entity.has_passengers() && self.is_pushable() {
+            let mut vel = self_entity.velocity.load();
+            vel.x -= dx;
+            vel.z -= dz;
+            self_entity.velocity.store(vel);
+            self_entity.velocity_dirty.store(true, Ordering::SeqCst);
+        }
+        if !other_entity.has_passengers() && entity.is_pushable() {
+            let mut vel = other_entity.velocity.load();
+            vel.x += dx;
+            vel.z += dz;
+            other_entity.velocity.store(vel);
+            other_entity.velocity_dirty.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn is_pushable(&self) -> bool {
+        true
+    }
+
+    /// Vanilla `AbstractBoat.interact` with `AbstractChestBoat.interact` layered on:
+    /// a normal click mounts, a sneak click opens a chest boat's container.
+    fn interact(&self, player: &Arc<Player>, _item_stack: &mut ItemStack) -> bool {
+        let secondary_use_active = player.get_entity().is_sneaking();
+        let out_of_control_expired = self.out_of_control_ticks.load() >= TIME_TO_EJECT;
+
+        if !secondary_use_active && !out_of_control_expired {
+            if self.can_add_passenger() && !player.get_entity().has_vehicle() {
+                let world = self.vehicle.entity.world.load();
+                let Some(vehicle) = world.get_entity_by_id(self.vehicle.entity.entity_id) else {
+                    return false;
+                };
+                let Some(passenger) = world.get_player_by_id(player.entity_id()) else {
+                    return false;
+                };
+
+                self.vehicle
+                    .entity
+                    .add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
+                return true;
+            }
+
+            // Vanilla: a failed ride attempt returns PASS even for chest boats
+            // unless the player was sneaking.
+            return false;
+        }
+
+        if self.can_add_passenger() && !secondary_use_active {
+            return false;
+        }
+
+        self.interact_with_container_vehicle(player)
+    }
+
+    fn set_paddle_state(&self, left: bool, right: bool) {
+        self.set_paddles(left, right);
+    }
+    fn cast_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn damage_with_context(
         &self,
         _caller: &dyn EntityBase,
@@ -512,59 +775,50 @@ impl EntityBase for BoatEntity {
         source: Option<&dyn EntityBase>,
         _cause: Option<&dyn EntityBase>,
     ) -> bool {
-        self.vehicle.damage_with_context(amount, source)
-    }
+        let creative = source
+            .and_then(EntityBase::get_player)
+            .is_some_and(|player| player.gamemode.load() == GameMode::Creative);
+        let will_break = self.vehicle.entity.is_alive()
+            && (creative || self.vehicle.get_damage() + amount * 10.0 > 40.0);
 
-    fn interact(&self, player: &Arc<Player>, _item_stack: &mut ItemStack) -> bool {
-        if player.get_entity().is_sneaking() {
-            return false;
+        let damaged = self.vehicle.damage_with_context(amount, source);
+
+        // Vanilla `AbstractChestBoat.destroy`: the boat item keeps its custom name and
+        // the container contents scatter. Creative players `discard` everything.
+        if will_break && !creative && self.vehicle.entity.is_removed() {
+            let world = self.vehicle.entity.world.load();
+            if world.level_info.load().game_rules.entity_drops {
+                let position = self.vehicle.entity.block_pos.load();
+                if let Some(inventory) = &self.chest_inventory
+                    && inventory.claim_drops()
+                {
+                    inventory.unpack_loot();
+                    let inventory: Arc<dyn pumpkin_inventory::Inventory> = inventory.clone();
+                    world.scatter_inventory(&position, &inventory);
+                }
+
+                let mut stack = ItemStack::new(1, self.drop_item);
+                if let Some(custom_name) = self.vehicle.entity.custom_name.load().as_ref().clone() {
+                    // Vanilla `VehicleEntity.destroy`: the dropped boat item keeps the
+                    // custom name.
+                    stack.set_custom_name(custom_name.get_text());
+                }
+                world.drop_stack(&position, stack);
+            }
         }
 
-        if self.out_of_control_ticks.load() >= TIME_TO_EJECT {
-            return false;
-        }
-
-        if self
-            .vehicle
-            .entity
-            .passengers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .len()
-            >= 2
-        {
-            return false;
-        }
-
-        if player.get_entity().has_vehicle() {
-            return false;
-        }
-
-        let world = self.vehicle.entity.world.load();
-        let Some(vehicle) = world.get_entity_by_id(self.vehicle.entity.entity_id) else {
-            return false;
-        };
-
-        let Some(passenger) = world.get_player_by_id(player.entity_id()) else {
-            return false;
-        };
-
-        self.vehicle
-            .entity
-            .add_passenger(vehicle, passenger as Arc<dyn EntityBase>);
-
-        true
+        damaged
     }
 
-    fn set_paddle_state(&self, left: bool, right: bool) {
-        self.set_paddles(left, right);
+    fn write_custom_nbt(&self, nbt: &mut NbtCompound) {
+        if let Some(inventory) = &self.chest_inventory {
+            inventory.write_nbt(nbt);
+        }
     }
 
-    fn cast_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn is_pushable(&self) -> bool {
-        true
+    fn read_custom_nbt(&self, nbt: &NbtCompound) {
+        if let Some(inventory) = &self.chest_inventory {
+            inventory.read_nbt(nbt);
+        }
     }
 }
