@@ -2,10 +2,18 @@ use std::any::Any;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use pumpkin_data::Block;
+use pumpkin_data::data_component_impl::JukeboxPlayableImpl;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::item_stack::ItemStack;
+use pumpkin_data::jukebox_song::JukeboxSong;
+use pumpkin_data::particle::Particle;
+use pumpkin_data::world::WorldEvent;
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::tag::NbtTag;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::vector3::Vector3;
+use rand::{RngExt, rng};
 
 use crate::block::entities::BlockEntity;
 use crate::world::World;
@@ -26,6 +34,9 @@ pub struct JukeboxBlockEntity {
 
 const RECORD_ITEM_NBT_KEY: &str = "RecordItem";
 const TICKS_SINCE_SONG_STARTED_NBT_KEY: &str = "ticks_since_song_started";
+/// Vanilla `JukeboxSong.SONG_END_PADDING_TICKS`: the song keeps counting as
+/// "playing" (redstone signal on) this many ticks past the music duration.
+const SONG_END_PADDING_TICKS: u64 = 20;
 
 impl BlockEntity for JukeboxBlockEntity {
     fn resource_location(&self) -> &'static str {
@@ -48,11 +59,23 @@ impl BlockEntity for JukeboxBlockEntity {
         let ticks_since_song_started =
             nbt.get_long(TICKS_SINCE_SONG_STARTED_NBT_KEY).unwrap_or(0) as u64;
 
+        // Vanilla `loadAdditional` -> `setSongWithoutPlaying`: a saved song that
+        // has not finished resumes (keeping the redstone signal on) without
+        // replaying the music.
+        let song_length_ticks = record_stack
+            .get_data_component::<JukeboxPlayableImpl>()
+            .and_then(|playable| JukeboxSong::from_name(playable.song.split(':').nth(1)?))
+            .map(|song| song.length_in_ticks())
+            .filter(|length| {
+                ticks_since_song_started < length.saturating_add(SONG_END_PADDING_TICKS)
+            })
+            .unwrap_or(0);
+
         Self {
             position,
             record_stack: Arc::new(Mutex::new(record_stack)),
             ticks_since_song_started: AtomicU64::new(ticks_since_song_started),
-            song_length_ticks: AtomicU64::new(0), // Will be set when playing starts
+            song_length_ticks: AtomicU64::new(song_length_ticks),
             dirty: AtomicBool::new(false),
             comparator_dirty: AtomicBool::new(false),
         }
@@ -75,19 +98,47 @@ impl BlockEntity for JukeboxBlockEntity {
         }
     }
 
-    fn tick(&self, _world: &Arc<World>) {
-        // Increment ticks if we're playing
+    /// Matches vanilla's `JukeboxSongPlayer.tick`
+    fn tick(&self, world: &Arc<World>) {
         let song_length = self.song_length_ticks.load(Ordering::Relaxed);
-        if song_length > 0 {
-            let ticks = self
-                .ticks_since_song_started
-                .fetch_add(1, Ordering::Relaxed);
-            // Check if song has finished
-            if ticks >= song_length {
-                self.stop_playing();
-                // TODO: Update block state to has_record = false? Or just stop redstone?
-                // In vanilla, the disc stays but music stops and redstone turns off
+        if song_length == 0 {
+            return;
+        }
+        let ticks = self.ticks_since_song_started.load(Ordering::Relaxed);
+        // Vanilla `JukeboxSong.hasFinished`
+        if ticks >= song_length.saturating_add(SONG_END_PADDING_TICKS) {
+            self.stop_playing();
+            // Vanilla `JukeboxSongPlayer.stop`: the disc stays inserted, only the
+            // music and the redstone signal stop.
+            world.sync_world_event(WorldEvent::SoundStopJukeboxSong, self.position, 0);
+            world.emit_game_event(
+                GameEvent::JukeboxStopPlay.name(),
+                self.position.to_centered_f64(),
+            );
+            // Vanilla: onSongChanged -> updateNeighborsAt so redstone sees the power drop
+            world.update_neighbors_at(&self.position, &Block::JUKEBOX, None);
+        } else {
+            // Vanilla emits JUKEBOX_PLAY and a note particle every 20 ticks
+            if ticks.is_multiple_of(20) {
+                world.emit_game_event(
+                    GameEvent::JukeboxPlay.name(),
+                    self.position.to_centered_f64(),
+                );
+                let random_color = rng().random_range(0..4) as f32 / 24.0;
+                world.spawn_particles(
+                    Particle::Note,
+                    Vector3::new(
+                        f64::from(self.position.0.x) + 0.5,
+                        f64::from(self.position.0.y) + 1.2,
+                        f64::from(self.position.0.z) + 0.5,
+                    ),
+                    0,
+                    Vector3::new(random_color, 0.0, 0.0),
+                    1.0,
+                );
             }
+            self.ticks_since_song_started
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -196,7 +247,9 @@ impl JukeboxBlockEntity {
             return false;
         }
         let ticks = self.ticks_since_song_started.load(Ordering::Relaxed);
-        ticks < song_length
+        // Vanilla `JukeboxSongPlayer.isPlaying` (song is only cleared by `stop`,
+        // which `tick` calls once `hasFinished`).
+        ticks < song_length.saturating_add(SONG_END_PADDING_TICKS)
     }
 
     fn mark_dirty(&self) {
