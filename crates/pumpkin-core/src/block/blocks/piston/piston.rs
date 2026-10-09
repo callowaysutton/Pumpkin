@@ -38,15 +38,36 @@ impl BlockMetadata for PistonBlock {
 impl PistonBlock {
     #[must_use]
     pub fn is_movable(
+        world: &World,
+        pos: &BlockPos,
         block: &Block,
         state: &BlockState,
         dir: BlockDirection,
         can_break: bool,
         piston_dir: BlockDirection,
     ) -> bool {
-        // TODO: more checks
+        // Vanilla `PistonBaseBlock#isPushable` rejects anything outside the world
+        // bounds or the world border before looking at the block itself.
+        if !world.is_in_build_limit(*pos) {
+            return false;
+        }
+        {
+            let border = world
+                .worldborder
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !border.contains(f64::from(pos.0.x), f64::from(pos.0.z)) {
+                return false;
+            }
+        }
         if state.is_air() {
             return true;
+        }
+        if dir == BlockDirection::Down && pos.0.y == world.get_bottom_y() {
+            return false;
+        }
+        if dir == BlockDirection::Up && pos.0.y == world.get_top_y() {
+            return false;
         }
         // Vanilla hardcoded them aswell
         if block == &Block::OBSIDIAN
@@ -128,6 +149,14 @@ impl BlockBehaviour for PistonBlock {
 }
 
 impl PistonBlock {
+    /// Vanilla `Level#removeBlock(pos, movedByPiston)`: replaces the block with the
+    /// fluid's legacy block and notifies neighbours. Piston contraction always
+    /// passes `movedByPiston = false`, so `MOVED` is not set.
+    fn remove_block(world: &Arc<World>, pos: &BlockPos) {
+        let (_, fluid_state) = world.get_fluid_and_fluid_state(pos);
+        world.set_block_state(pos, fluid_state.block_state_id, BlockFlags::NOTIFY_ALL);
+    }
+
     #[expect(clippy::too_many_lines)]
     fn handle_synced_block_event(
         block: &Block,
@@ -241,38 +270,40 @@ impl PistonBlock {
             last_ticked: 0.into(),
         }));
 
-        world.set_block_state(
-            &extended_pos,
-            Block::AIR.default_state.id,
-            BlockFlags::NOTIFY_ALL | BlockFlags::FORCE_STATE,
-        );
-
         world.update_neighbors(pos, None);
         if sticky {
+            // Vanilla: a still-extending sticky piston two blocks ahead keeps its
+            // arm, which is what lets two pistons swap their blocks.
             let pull_pos = pos.offset_dir(dir.to_offset(), 2);
             let (block, state) = world.get_block_and_state(&pull_pos);
-            if r#type != 1
-                || state.is_air()
-                || !Self::is_movable(block, state, dir.opposite(), false, dir)
-                || (state.piston_behavior != PistonBehavior::Normal
-                    && block != &Block::PISTON
-                    && block != &Block::STICKY_PISTON)
+            let piston_piece = if block == &Block::MOVING_PISTON
+                && MovingPistonLikeProperties::from_state_id(state.id).facing == dir.to_facing()
+                && let Some(entity) = world.get_block_entity(&pull_pos)
+                && let Some(moving) = entity.as_any().downcast_ref::<PistonBlockEntity>()
+                && moving.facing == dir
+                && moving.extending
             {
-                world.set_block_state(
-                    &extended_pos,
-                    Block::AIR.default_state.id,
-                    BlockFlags::NOTIFY_ALL,
-                );
+                moving.finish(world);
+                true
             } else {
-                move_piston(world, dir, pos, false, sticky);
+                false
+            };
+
+            if !piston_piece {
+                if r#type != 1
+                    || state.is_air()
+                    || !Self::is_movable(world, &pull_pos, block, state, dir.opposite(), false, dir)
+                    || (state.piston_behavior != PistonBehavior::Normal
+                        && block != &Block::PISTON
+                        && block != &Block::STICKY_PISTON)
+                {
+                    Self::remove_block(world, &extended_pos);
+                } else {
+                    move_piston(world, dir, pos, false, sticky);
+                }
             }
         } else {
-            // remove
-            world.set_block_state(
-                &extended_pos,
-                Block::AIR.default_state.id,
-                BlockFlags::NOTIFY_ALL,
-            );
+            Self::remove_block(world, &extended_pos);
         }
         // Play piston contract sound
         let pitch = rand::rng().random_range(0.6f32..0.75);
@@ -339,20 +370,20 @@ pub fn try_move(world: &Arc<World>, _block: &Block, block_pos: &BlockPos) {
                 let Some(piston) = entity.as_any().downcast_ref::<PistonBlockEntity>() else {
                     return;
                 };
-                if piston.extending {
-                    // Vanilla checks `getProgress(0.0F) < 0.5F` (the progress from
-                    // the previous tick) or that the piece was ticked this game time,
-                    // so a retract arriving during the extension animation sends the
-                    // "drop" event instead of a normal retract.
-                    let progress = piston.last_progress.load();
-                    let game_time = world
-                        .level_time
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .query_gametime();
-                    if progress < 0.5 || game_time == piston.last_ticked.load() {
-                        r#type = 2;
-                    }
+                // Vanilla `PistonBaseBlock#checkIfExtend`:
+                // `isExtending() && (getProgress(0.0F) < 0.5F || level.getGameTime() == getLastTicked())`.
+                // `getProgress(0.0F)` is `progressO` (last tick's progress), so this
+                // makes a retract that arrives mid-extension (or in the very tick the
+                // piece was ticked) fire the "drop" event instead of a normal retract.
+                let game_time = world
+                    .level_time
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .query_gametime();
+                if piston.extending
+                    && (piston.last_progress.load() < 0.5 || game_time == piston.last_ticked.load())
+                {
+                    r#type = 2;
                 }
             }
         }
