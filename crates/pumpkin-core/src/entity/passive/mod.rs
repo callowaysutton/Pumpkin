@@ -1,3 +1,4 @@
+pub mod abstract_schooling_fish;
 pub mod allay;
 pub mod animal;
 pub mod armadillo;
@@ -30,7 +31,6 @@ pub mod polar_bear;
 pub mod pufferfish;
 pub mod rabbit;
 pub mod salmon;
-pub mod schooling_fish;
 pub mod sheep;
 pub mod skeleton_horse;
 pub mod sniffer;

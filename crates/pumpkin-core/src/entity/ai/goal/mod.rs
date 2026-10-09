@@ -45,6 +45,7 @@ pub mod pick_up_block;
 pub mod place_block;
 pub mod random_float_around;
 pub mod random_stand;
+pub mod random_swimming;
 pub mod ranged_attack;
 pub mod ranged_crossbow_attack;
 pub mod reset_universal_anger;

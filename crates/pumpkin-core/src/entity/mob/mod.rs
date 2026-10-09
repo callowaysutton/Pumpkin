@@ -1134,12 +1134,6 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
         true
     }
 
-    fn as_schooling_fish(
-        &self,
-    ) -> Option<&dyn crate::entity::passive::schooling_fish::SchoolingFish> {
-        None
-    }
-
     fn as_patrolling_monster(&self) -> Option<&dyn patrol::PatrollingMonster> {
         None
     }
@@ -1150,6 +1144,13 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
 
     /// Must return `Some(self)` for every `NeutralMob` implementor. Not compiler-enforced.
     fn as_neutral(&self) -> Option<&dyn neutral::NeutralMob> {
+        None
+    }
+
+    /// Vanilla `AbstractSchoolingFish` implementors (cod); return `Some(self)` then.
+    fn as_schooling_fish(
+        &self,
+    ) -> Option<&dyn crate::entity::passive::abstract_schooling_fish::SchoolingFish> {
         None
     }
 
