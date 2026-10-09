@@ -16,7 +16,12 @@ use crate::block::{
 use crate::entity::ageable::AgeableMob;
 use crate::entity::decoration::armor_stand::ArmorStandEntity;
 use crate::entity::item::ItemEntity;
+use crate::entity::passive::armadillo::ArmadilloEntity;
+use crate::entity::passive::donkey::DonkeyEntity;
+use crate::entity::passive::llama::LlamaEntity;
+use crate::entity::passive::mule::MuleEntity;
 use crate::entity::passive::sheep::SheepEntity;
+use crate::entity::passive::trader_llama::TraderLlamaEntity;
 use crate::entity::projectile::ThrownItemEntity;
 use crate::entity::projectile::arrow::{ArrowEntity, ArrowPickup};
 use crate::entity::projectile::egg::EggEntity;
@@ -37,6 +42,7 @@ use crate::item::items::bucket::{
     FilledBucketItem, play_bucket_evaporation, should_evaporate_in_nether, try_pickup_fluid_at,
     try_place_filled_bucket,
 };
+use crate::item::items::egg::EggItem;
 use crate::item::items::honeycomb::try_wax_block;
 use crate::item::items::ignite::ignition::Ignition;
 use crate::item::items::minecart::MinecartItem;
@@ -312,6 +318,7 @@ impl DispenserBlock {
     const FIREWORK_PROJECTILE_POWER: f64 = 0.5;
     const FIREWORK_PROJECTILE_UNCERTAINTY: f64 = 1.0;
 
+    #[allow(clippy::too_many_lines)]
     fn dispense(ctx: &DispenseContext<'_>, dispenser: &DispenserBlockEntity, item: &mut ItemStack) {
         let mut event = crate::plugin::api::events::block::block_dispense::BlockDispenseEvent::new(
             *ctx.position,
@@ -358,7 +365,7 @@ impl DispenserBlock {
             Self::dispense_tnt(ctx, item);
         } else if item.item.id == Item::SNOWBALL.id {
             Self::dispense_snowball(ctx, item);
-        } else if item.item.id == Item::EGG.id {
+        } else if EggItem::ids().contains(&item.item.id) {
             Self::dispense_egg(ctx, item);
         } else if item.item.id == Item::SPLASH_POTION.id {
             Self::dispense_splash_potion(ctx, item);
@@ -382,6 +389,29 @@ impl DispenserBlock {
         } else if item.item.id == Item::HONEYCOMB.id {
             // Honeycombs wax copper blocks
             Self::dispense_honeycomb(ctx, item);
+        } else if item.item.id == Item::BONE_MEAL.id {
+            // Bone meal grows crops in front of the dispenser
+            let success = Self::dispense_bone_meal(ctx, item);
+            Self::play_dispense_effects(
+                ctx,
+                if success {
+                    WorldEvent::SoundDispenserDispense
+                } else {
+                    WorldEvent::SoundDispenserFail
+                },
+            );
+        } else if item.item.id == Item::CHEST.id {
+            // Chests are placed onto tamed chested horses (donkeys/mules/llamas)
+            if !Self::dispense_chest(ctx, item) {
+                Self::drop_item(ctx, item);
+            }
+        } else if item.item.id == Item::BRUSH.id {
+            // Brushes shave scutes off armadillos
+            if Self::dispense_brush(ctx, item) {
+                Self::play_dispense_effects(ctx, WorldEvent::SoundDispenserDispense);
+            } else {
+                Self::play_dispense_effects(ctx, WorldEvent::SoundDispenserFail);
+            }
         } else if entity_from_egg(item.item.id).is_some() {
             // Spawn eggs
             Self::dispense_spawn_egg(ctx, item);
@@ -421,7 +451,8 @@ impl DispenserBlock {
             // Armor, elytra, heads, saddles, horse/wolf armor and llama carpets
             Self::play_dispense_effects(ctx, WorldEvent::SoundDispenserDispense);
         } else {
-            // TODO: Bone meal, bottles o' enchanting, chests onto llamas, brushes onto armadillos
+            // TODO: Bottles o' enchanting need a thrown experience bottle projectile entity to
+            // match vanilla's projectile dispense behavior; they currently fall through to Drop.
             // Default / Drop
             Self::drop_item(ctx, item);
         }
@@ -891,6 +922,87 @@ impl DispenserBlock {
         } else {
             Self::play_dispense_effects(ctx, WorldEvent::SoundDispenserFail);
         }
+    }
+
+    fn dispense_bone_meal(ctx: &DispenseContext<'_>, item: &mut ItemStack) -> bool {
+        let target = Self::target_position(ctx);
+        let block = ctx.world.get_block(&target);
+        let state_id = ctx.world.get_block_state_id(&target);
+
+        let Some(server) = ctx.world.server.upgrade() else {
+            return false;
+        };
+
+        if !server
+            .block_registry
+            .bone_meal(block, ctx.world, &target, state_id)
+        {
+            return false;
+        }
+
+        ctx.world
+            .sync_world_event(WorldEvent::ParticlesAndSoundPlantGrowth, target, 15);
+        item.decrement(1);
+        true
+    }
+
+    fn dispense_chest(ctx: &DispenseContext<'_>, item: &mut ItemStack) -> bool {
+        let target_box = BoundingBox::from_block(&Self::target_position(ctx));
+        for entity in ctx.world.get_entities_at_box(&target_box) {
+            if !entity.get_entity().is_alive() {
+                continue;
+            }
+
+            let any = entity.cast_any();
+            if let Some(llama) = any.downcast_ref::<LlamaEntity>()
+                && llama.is_tame()
+                && !llama.has_chest()
+            {
+                llama.set_has_chest(true);
+                item.decrement(1);
+                return true;
+            } else if let Some(llama) = any.downcast_ref::<TraderLlamaEntity>()
+                && llama.is_tame()
+                && !llama.has_chest()
+            {
+                llama.set_has_chest(true);
+                item.decrement(1);
+                return true;
+            } else if let Some(donkey) = any.downcast_ref::<DonkeyEntity>()
+                && donkey.is_tame()
+                && !donkey.has_chest()
+            {
+                donkey.set_has_chest(true);
+                item.decrement(1);
+                return true;
+            } else if let Some(mule) = any.downcast_ref::<MuleEntity>()
+                && mule.is_tame()
+                && !mule.has_chest()
+            {
+                mule.set_has_chest(true);
+                item.decrement(1);
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn dispense_brush(ctx: &DispenseContext<'_>, item: &mut ItemStack) -> bool {
+        let target_box = BoundingBox::from_block(&Self::target_position(ctx));
+        for entity in ctx.world.get_entities_at_box(&target_box) {
+            let Some(armadillo) = entity.cast_any().downcast_ref::<ArmadilloEntity>() else {
+                continue;
+            };
+
+            if armadillo.drop_scute() {
+                // `damage_item` already consumes the brush from the stack when it breaks.
+                let _ = item.damage_item(16);
+                return true;
+            }
+        }
+
+        false
     }
 
     fn dispense_minecart(ctx: &DispenseContext<'_>, item: &mut ItemStack) -> bool {
