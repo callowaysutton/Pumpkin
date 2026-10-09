@@ -895,6 +895,9 @@ pub struct Entity {
     pub glowing: AtomicBool,
     /// Indicates whether the entity is flying due to a fall
     pub fall_flying: AtomicBool,
+    /// Number of consecutive ticks this entity has been gliding with an elytra.
+    /// Used to space out glider durability damage and glide game events.
+    pub fall_fly_ticks: AtomicI32,
     /// The entity's current velocity vector, aka knockback
     pub velocity: AtomicCell<Vector3<f64>>,
     /// Tracks a horizontal collision
@@ -1067,6 +1070,7 @@ impl Entity {
             world: ArcSwap::new(world),
             sprinting: AtomicBool::new(false),
             fall_flying: AtomicBool::new(false),
+            fall_fly_ticks: AtomicI32::new(0),
             yaw: AtomicCell::new(0.0),
             head_yaw: AtomicCell::new(0.0),
             body_yaw: AtomicCell::new(0.0),
@@ -2561,6 +2565,13 @@ impl Entity {
         self.touching_water.load(Ordering::Relaxed)
     }
 
+    /// Whether the entity is in any liquid (water or lava).
+    /// Matches vanilla `Entity.isInLiquid`.
+    #[must_use]
+    pub fn is_in_liquid(&self) -> bool {
+        self.is_in_water() || self.touching_lava.load(Ordering::Relaxed)
+    }
+
     #[must_use]
     pub fn is_submerged_in_water(&self) -> bool {
         let pos = self.pos.load();
@@ -2745,12 +2756,8 @@ impl Entity {
     pub fn is_sprinting(&self) -> bool {
         self.sprinting.load(Ordering::Relaxed)
     }
-    pub fn check_fall_flying(&self) -> bool {
-        !self.on_ground.load(Relaxed)
-    }
-
+    /// Sets the fall-flying flag. Idempotent, matching vanilla `setSharedFlag(7, value)`.
     pub fn set_fall_flying(&self, fall_flying: bool) {
-        assert_ne!(self.fall_flying.load(Relaxed), fall_flying);
         self.fall_flying.store(fall_flying, Relaxed);
         self.set_flag(Flag::FallFlying, fall_flying);
     }
@@ -4243,6 +4250,12 @@ impl EntityBase for Entity {
         if riding_cooldown > 0 {
             self.riding_cooldown
                 .store(riding_cooldown - 1, Ordering::Relaxed);
+        }
+
+        if self.is_fall_flying() {
+            self.fall_fly_ticks.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.fall_fly_ticks.store(0, Ordering::Relaxed);
         }
     }
 
