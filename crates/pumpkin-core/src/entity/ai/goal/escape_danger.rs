@@ -37,14 +37,16 @@ impl EscapeDangerGoal {
     }
 
     /// Only `#minecraft:panic_causes` damage makes a mob flee, and only while the source is still
-    /// remembered.
+    /// remembered. A mob-controlled horse (vanilla `MountPanicGoal`) never panics.
     fn should_panic(mob: &dyn Mob) -> bool {
-        mob.get_mob_entity()
-            .living_entity
-            .get_last_damage_type()
-            .is_some_and(|damage_type| {
-                damage_type.has_tag(&tag::DamageType::MINECRAFT_PANIC_CAUSES)
-            })
+        !mob.is_mob_controlled()
+            && mob
+                .get_mob_entity()
+                .living_entity
+                .get_last_damage_type()
+                .is_some_and(|damage_type| {
+                    damage_type.has_tag(&tag::DamageType::MINECRAFT_PANIC_CAUSES)
+                })
     }
 
     /// Nearest water within 5 blocks horizontally, only when the mob is not stuck in a block.

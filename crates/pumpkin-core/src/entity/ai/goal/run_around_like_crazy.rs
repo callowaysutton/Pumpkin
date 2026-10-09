@@ -2,7 +2,9 @@ use super::{Controls, Goal};
 use crate::entity::ai::pathfinder::NavigatorGoal;
 use crate::entity::ai::util::default_random_pos;
 use crate::entity::mob::Mob;
+use pumpkin_data::entity::EntityStatus;
 use pumpkin_util::math::vector3::Vector3;
+use rand::RngExt;
 
 pub struct RunAroundLikeCrazyGoal {
     goal_control: Controls,
@@ -27,7 +29,7 @@ impl RunAroundLikeCrazyGoal {
 
 impl Goal for RunAroundLikeCrazyGoal {
     fn can_start(&mut self, mob: &dyn Mob) -> bool {
-        if mob.is_tamed() || !mob.get_entity().has_passengers() {
+        if mob.is_mob_controlled() || mob.is_tamed() || !mob.get_entity().has_passengers() {
             return false;
         }
 
@@ -59,6 +61,48 @@ impl Goal for RunAroundLikeCrazyGoal {
             Vector3::new(self.pos_x, self.pos_y, self.pos_z),
             self.speed_modifier,
         ));
+    }
+
+    fn tick(&mut self, mob: &dyn Mob) {
+        if mob.is_tamed() {
+            return;
+        }
+
+        let mut rng = mob.get_random();
+        if rng.random_range(0..self.get_tick_count(50)) != 0 {
+            return;
+        }
+
+        let entity = mob.get_entity();
+        let Some(passenger) = entity.get_first_passenger() else {
+            return;
+        };
+
+        // Only a player can tame the horse while it is throwing them off.
+        if passenger.get_entity().entity_type.id == pumpkin_data::entity::EntityType::PLAYER.id {
+            let temper = mob.get_temper();
+            let max_temper = mob.get_max_temper();
+            if max_temper > 0 && rng.random_range(0..max_temper) < temper {
+                if let Some(player) = entity
+                    .world
+                    .load()
+                    .get_player_by_id(passenger.get_entity().entity_id)
+                {
+                    mob.tame_with_name(&player);
+                }
+                return;
+            }
+
+            mob.modify_temper(5);
+        }
+
+        entity.eject_passengers();
+        mob.make_mad();
+        entity.world.load().broadcast_entity_event(
+            entity,
+            EntityStatus::TamingFailed,
+            Some(pumpkin_protocol::bedrock::server::actor_event::ActorEventID::TamingFailed),
+        );
     }
 
     fn controls(&self) -> Controls {

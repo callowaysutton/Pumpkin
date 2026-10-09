@@ -918,6 +918,63 @@ pub trait Mob: EntityBase + Send + Sync {
 
     fn set_saddled(&self, _saddled: bool) {}
 
+    /// Vanilla `AbstractHorse#isMobControlled`. When true the mob ignores panic goals
+    /// because a controlling passenger decides where it goes.
+    fn is_mob_controlled(&self) -> bool {
+        false
+    }
+
+    /// Vanilla `AbstractHorse#getTemper`.
+    fn get_temper(&self) -> i32 {
+        0
+    }
+
+    /// Vanilla `AbstractHorse#getMaxTemper`.
+    fn get_max_temper(&self) -> i32 {
+        100
+    }
+
+    /// Vanilla `AbstractHorse#modifyTemper`, clamps to `0..=get_max_temper()`.
+    fn modify_temper(&self, _amount: i32) -> i32 {
+        self.get_temper()
+    }
+
+    /// Vanilla `AbstractHorse#tameWithName`. Returns whether the horse was tamed.
+    fn tame_with_name(&self, _player: &Player) -> bool {
+        false
+    }
+
+    /// Vanilla `AbstractHorse#canPerformRearing`.
+    fn can_perform_rearing(&self) -> bool {
+        false
+    }
+
+    /// Vanilla `AbstractHorse#isStanding`.
+    fn is_standing(&self) -> bool {
+        false
+    }
+
+    /// Vanilla `AbstractHorse#standIfPossible`.
+    fn stand_if_possible(&self) {}
+
+    /// Vanilla `AbstractHorse#makeMad`.
+    fn make_mad(&self) {}
+
+    /// Also true while rearing or eating hay, matching `AbstractHorse#isImmobile`.
+    fn is_immobile(&self) -> bool {
+        self.get_mob_entity().living_entity.health.load() <= 0.0
+    }
+
+    /// Vanilla `AbstractHorse#getAmbientStandInterval`, used by `RandomStandGoal`.
+    fn get_ambient_stand_interval(&self) -> i32 {
+        0
+    }
+
+    /// Vanilla `AbstractHorse#getAmbientStandSound`.
+    fn get_ambient_stand_sound(&self) -> Option<pumpkin_data::sound::Sound> {
+        None
+    }
+
     fn check_spawn_obstruction(&self, world: &World) -> bool {
         let bounding_box = self.get_entity().bounding_box.load();
         !world.contains_any_liquid(bounding_box)

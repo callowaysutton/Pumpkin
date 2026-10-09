@@ -3478,6 +3478,32 @@ impl Entity {
             .is_empty()
     }
 
+    /// Vanilla `Entity#getFirstPassenger`.
+    #[must_use]
+    pub fn get_first_passenger(&self) -> Option<Arc<dyn EntityBase>> {
+        self.passengers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .first()
+            .cloned()
+    }
+
+    /// Vanilla `Entity#ejectPassengers`: dismount every passenger with the normal
+    /// dismount positioning. Collects ids first so the passenger lock is not held
+    /// while `remove_passenger` takes it again.
+    pub fn eject_passengers(&self) {
+        let ids: Vec<i32> = self
+            .passengers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|passenger| passenger.get_entity().entity_id)
+            .collect();
+        for id in ids {
+            self.remove_passenger(id);
+        }
+    }
+
     pub fn has_passenger(&self, id: i32) -> bool {
         self.passengers
             .lock()
