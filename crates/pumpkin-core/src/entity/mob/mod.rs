@@ -642,6 +642,7 @@ impl MobEntity {
         Self::check_surface_water_animal_spawn_rules(world, pos)
     }
 
+    /// Vanilla `Mob.doHurtTarget`: returns whether the target was actually hurt.
     pub fn try_attack(&self, caller: &dyn EntityBase, target: &dyn EntityBase) -> bool {
         if self.living_entity.dead.load(Relaxed) {
             return false;
@@ -816,11 +817,6 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
             return false;
         }
         self.get_mob_entity().living_entity.can_attack(target)
-    }
-
-    /// Vanilla `Mob.doHurtTarget`. Brains' `MeleeAttack` runs the swing and cooldown themselves.
-    fn do_hurt_target(&self, target: &dyn EntityBase) -> bool {
-        self.get_mob_entity().try_attack(self.get_entity(), target)
     }
 
     /// Takes the navigation lock, so callers must not already hold it.
@@ -1065,6 +1061,12 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
     }
 
     fn on_damage(&self, _damage_type: DamageType, _source: Option<&dyn EntityBase>) {}
+
+    /// Vanilla `Mob.doHurtTarget`: routes a melee hit through the attacker's
+    /// `try_attack`, which already fires the `on_attack` hook on a landed hit.
+    fn do_hurt_target(&self, target: &dyn EntityBase) -> bool {
+        self.get_mob_entity().try_attack(self.get_entity(), target)
+    }
 
     fn on_attack(&self, _target: &dyn EntityBase) {}
 
