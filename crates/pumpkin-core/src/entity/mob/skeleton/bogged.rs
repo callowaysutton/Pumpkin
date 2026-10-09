@@ -8,7 +8,6 @@ use pumpkin_data::entity::EntityType;
 use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_data::potion::Effect;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::vector3::Vector3;
@@ -116,15 +115,7 @@ impl Mob for BoggedSkeletonEntity {
 
     fn modify_shot_arrow(&self, arrow: &ArrowEntity) {
         // Vanilla `Bogged::getArrow` adds a poison effect on top of the base arrow.
-        arrow.add_effect(&Effect {
-            effect_type: &StatusEffect::POISON,
-            duration: 100,
-            amplifier: 0,
-            ambient: false,
-            show_particles: true,
-            show_icon: true,
-            blend: false,
-        });
+        arrow.add_effect(&StatusEffect::POISON, 100, 0);
     }
 
     fn mob_write_nbt(&self, nbt: &mut NbtCompound) {

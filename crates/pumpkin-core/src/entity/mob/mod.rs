@@ -1091,11 +1091,6 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
         None
     }
 
-    /// Vanilla `LivingEntity.onClimbable` per-mob override, see `EntityBase::on_climbable`.
-    fn mob_on_climbable(&self) -> bool {
-        false
-    }
-
     /// Vanilla `Entity.travel(Vec3)` override hook. Return `true` when the mob
     /// handles its own movement (e.g. a squid moving by its own delta movement),
     /// so `tick_movement` skips the default water/air travel.
@@ -1745,10 +1740,6 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
     fn get_y_velocity_drag(&self) -> Option<f64> {
         self.get_mob_y_velocity_drag()
-    }
-
-    fn on_climbable(&self) -> bool {
-        self.mob_on_climbable()
     }
 
     fn travel(&self, caller: &dyn EntityBase) -> bool {

@@ -366,13 +366,6 @@ pub trait EntityBase: Send + Sync + std::any::Any {
         false
     }
 
-    /// Vanilla `LivingEntity.onClimbable`. Climbable blocks (ladders, vines) are
-    /// not implemented yet, so only mobs with their own climbing flag (spiders)
-    /// override this.
-    fn on_climbable(&self) -> bool {
-        false
-    }
-
     fn set_sprinting(&self, is_sprinting: bool) {
         if let Some(living) = self.get_living_entity() {
             living.set_sprinting(is_sprinting);
