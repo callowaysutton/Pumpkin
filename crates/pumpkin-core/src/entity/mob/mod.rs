@@ -1013,6 +1013,12 @@ pub trait Mob: EntityBase + Send + Sync + std::any::Any {
     /// Per-mob tick hook called each tick before AI runs. Override for mob-specific logic.
     fn mob_tick(&self, _caller: &dyn EntityBase) {}
 
+    /// Vanilla `Entity.onClimbable` override point. Defaults to the generic ladder/vine
+    /// climbing flag; wall-climbers such as spiders return their synced climb flag.
+    fn on_climbable(&self) -> bool {
+        self.get_mob_entity().living_entity.climbing.load(Relaxed)
+    }
+
     fn post_tick(&self) {}
 
     fn get_preferred_weapon_type(&self) -> Option<&'static pumpkin_data::tag::Tag> {
@@ -1486,6 +1492,10 @@ impl<T: Mob + Send + 'static> EntityBase for T {
 
     fn is_pushable(&self) -> bool {
         self.get_mob_entity().living_entity.is_pushable()
+    }
+
+    fn on_climbable(&self) -> bool {
+        Mob::on_climbable(self)
     }
 
     fn on_lightning_strike(

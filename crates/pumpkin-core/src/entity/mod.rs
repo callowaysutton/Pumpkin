@@ -132,6 +132,13 @@ impl dyn EntityBase + '_ {
 }
 
 pub trait EntityBase: Send + Sync + std::any::Any {
+    /// Vanilla `Entity.onClimbable`: whether the entity is currently able to climb
+    /// (ladder, vine, or a mob-specific override such as `Spider`).
+    fn on_climbable(&self) -> bool {
+        self.get_living_entity()
+            .is_some_and(|living| living.climbing.load(Ordering::Relaxed))
+    }
+
     fn write_nbt(&self, nbt: &mut NbtCompound) {
         self.get_entity().write_nbt(nbt);
         if let Some(living) = self.get_living_entity() {

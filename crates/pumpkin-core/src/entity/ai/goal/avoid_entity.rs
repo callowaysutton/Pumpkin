@@ -21,6 +21,7 @@ pub struct AvoidEntityGoal {
     flee_distance: f64,
     slow_speed: f64,
     fast_speed: f64,
+    avoid_predicate: Option<fn(&dyn EntityBase) -> bool>,
     target: Option<Arc<dyn EntityBase>>,
     flee_pos: Option<Vector3<f64>>,
     gate: Option<MobFilter>,
@@ -41,6 +42,7 @@ impl AvoidEntityGoal {
             flee_distance,
             slow_speed,
             fast_speed,
+            avoid_predicate: None,
             target: None,
             flee_pos: None,
             gate: None,
@@ -62,6 +64,7 @@ impl AvoidEntityGoal {
             flee_distance,
             slow_speed,
             fast_speed,
+            avoid_predicate: None,
             target: None,
             flee_pos: None,
             gate: None,
@@ -72,6 +75,13 @@ impl AvoidEntityGoal {
     #[must_use]
     pub const fn gated_by(mut self, gate: MobFilter) -> Self {
         self.gate = Some(gate);
+        self
+    }
+
+    /// Vanilla's `avoidPredicate`, an extra condition on the entity being fled from.
+    #[must_use]
+    pub fn with_avoid_predicate(mut self, predicate: fn(&dyn EntityBase) -> bool) -> Self {
+        self.avoid_predicate = Some(predicate);
         self
     }
 
@@ -87,6 +97,9 @@ impl AvoidEntityGoal {
             world
                 .get_nearest_player(pos, self.flee_distance, |player| {
                     EntityPredicate::ExceptCreativeOrSpectator.test(player.get_entity())
+                        && self
+                            .avoid_predicate
+                            .is_none_or(|avoid| avoid(player.as_ref()))
                 })
                 .map(|p| p as Arc<dyn EntityBase>)
         } else {
@@ -97,6 +110,9 @@ impl AvoidEntityGoal {
                     && self
                         .flee_category
                         .is_none_or(|category| entity.get_entity().entity_type.category == category)
+                    && self
+                        .avoid_predicate
+                        .is_none_or(|avoid| avoid(entity.as_ref()))
             })
         }
     }

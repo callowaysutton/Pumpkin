@@ -10,20 +10,26 @@ use uuid::Uuid;
 
 use crate::entity::{
     Entity, EntityBase,
-    ai::goal::{
-        active_target::{ActiveTargetGoal, TargetCondition},
-        look_around::RandomLookAroundGoal,
-        look_at_entity::LookAtEntityGoal,
-        revenge::RevengeGoal,
-        spider_attack::SpiderAttackGoal,
-        swim::SwimGoal,
-        wander_around::WanderAroundGoal,
+    ai::{
+        goal::{
+            active_target::{ActiveTargetGoal, TargetCondition},
+            avoid_entity::AvoidEntityGoal,
+            leap_at_target::LeapAtTargetGoal,
+            look_around::RandomLookAroundGoal,
+            look_at_entity::LookAtEntityGoal,
+            revenge::RevengeGoal,
+            spider_attack::SpiderAttackGoal,
+            swim::SwimGoal,
+            wander_around::WanderAroundGoal,
+        },
+        pathfinder::Navigator,
     },
     mob::{
         Mob, MobEntity,
         equipment::RegionalDifficulty,
         spawn::{SpawnGroupData, finalize_spawn},
     },
+    passive::armadillo::ArmadilloEntity,
     r#type::from_type,
 };
 use crate::world::World;
@@ -47,6 +53,15 @@ impl SpiderEntity {
         };
 
         {
+            let mut navigator = mob_arc
+                .mob_entity
+                .navigator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *navigator = Navigator::wall_climber();
+        };
+
+        {
             let mut goal_selector = mob_arc
                 .mob_entity
                 .goals_selector
@@ -59,7 +74,20 @@ impl SpiderEntity {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             goal_selector.add_goal(1, Box::new(SwimGoal::default()));
-            goal_selector.add_goal(3, SpiderAttackGoal::new(1.0, false));
+            goal_selector.add_goal(
+                2,
+                Box::new(
+                    AvoidEntityGoal::new(&EntityType::ARMADILLO, 6.0, 1.0, 1.2)
+                        .with_avoid_predicate(|entity| {
+                            entity
+                                .cast_any()
+                                .downcast_ref::<ArmadilloEntity>()
+                                .is_none_or(|armadillo| !armadillo.is_scared())
+                        }),
+                ),
+            );
+            goal_selector.add_goal(3, Box::new(LeapAtTargetGoal::new(0.4)));
+            goal_selector.add_goal(4, SpiderAttackGoal::new(1.0, true));
             goal_selector.add_goal(5, Box::new(WanderAroundGoal::new(0.8)));
             goal_selector.add_goal(
                 6,
@@ -88,13 +116,30 @@ impl SpiderEntity {
     }
 
     pub fn set_climbing(&self, climbing: bool) {
-        if self.is_climbing.swap(climbing, Ordering::Relaxed) != climbing {
-            let flags = i8::from(climbing);
-            self.mob_entity
-                .living_entity
-                .entity
-                .set_synced_data(pumpkin_data::tracked_data::spider::DATA_FLAGS_ID, flags);
-        }
+        set_climbing_flag(&self.mob_entity, &self.is_climbing, climbing);
+    }
+}
+
+/// Vanilla `Spider.tick`: climb while pressed against a wall. Shared by cave spiders,
+/// which inherit `Spider` in vanilla.
+pub fn spider_climbing_tick(mob_entity: &MobEntity, is_climbing: &AtomicBool) {
+    let entity = &mob_entity.living_entity.entity;
+    if !entity.is_alive() {
+        return;
+    }
+
+    let vel = entity.velocity.load();
+    let is_colliding_horizontally = vel.x.abs() < 1e-4 && vel.z.abs() < 1e-4;
+    set_climbing_flag(mob_entity, is_climbing, is_colliding_horizontally);
+}
+
+fn set_climbing_flag(mob_entity: &MobEntity, is_climbing: &AtomicBool, climbing: bool) {
+    if is_climbing.swap(climbing, Ordering::Relaxed) != climbing {
+        let flags = i8::from(climbing);
+        mob_entity
+            .living_entity
+            .entity
+            .set_synced_data(pumpkin_data::tracked_data::spider::DATA_FLAGS_ID, flags);
     }
 }
 
@@ -159,13 +204,10 @@ impl Mob for SpiderEntity {
     }
 
     fn mob_tick(&self, _caller: &dyn EntityBase) {
-        let entity = &self.mob_entity.living_entity.entity;
-        if !entity.is_alive() {
-            return;
-        }
+        spider_climbing_tick(&self.mob_entity, &self.is_climbing);
+    }
 
-        let vel = entity.velocity.load();
-        let is_colliding_horizontally = vel.x.abs() < 1e-4 && vel.z.abs() < 1e-4;
-        self.set_climbing(is_colliding_horizontally);
+    fn on_climbable(&self) -> bool {
+        self.is_climbing()
     }
 }

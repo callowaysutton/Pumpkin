@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
 
 use pumpkin_data::effect::StatusEffect;
@@ -6,30 +7,49 @@ use pumpkin_data::potion::Effect;
 
 use crate::entity::{
     Entity, EntityBase,
-    ai::goal::{
-        active_target::{ActiveTargetGoal, TargetCondition},
-        look_around::RandomLookAroundGoal,
-        look_at_entity::LookAtEntityGoal,
-        revenge::RevengeGoal,
-        spider_attack::SpiderAttackGoal,
-        swim::SwimGoal,
-        wander_around::WanderAroundGoal,
+    ai::{
+        goal::{
+            active_target::{ActiveTargetGoal, TargetCondition},
+            avoid_entity::AvoidEntityGoal,
+            leap_at_target::LeapAtTargetGoal,
+            look_around::RandomLookAroundGoal,
+            look_at_entity::LookAtEntityGoal,
+            revenge::RevengeGoal,
+            spider_attack::SpiderAttackGoal,
+            swim::SwimGoal,
+            wander_around::WanderAroundGoal,
+        },
+        pathfinder::Navigator,
     },
     mob::{Mob, MobEntity},
+    passive::armadillo::ArmadilloEntity,
 };
 
 pub struct CaveSpiderEntity {
     pub mob_entity: MobEntity,
+    pub is_climbing: AtomicBool,
 }
 
 impl CaveSpiderEntity {
     pub fn new(entity: Entity) -> Arc<Self> {
         let mob_entity = MobEntity::new(entity);
-        let cave_spider = Self { mob_entity };
+        let cave_spider = Self {
+            mob_entity,
+            is_climbing: AtomicBool::new(false),
+        };
         let mob_arc = Arc::new(cave_spider);
         let mob_weak: Weak<dyn Mob> = {
             let mob_arc: Arc<dyn Mob> = mob_arc.clone();
             Arc::downgrade(&mob_arc)
+        };
+
+        {
+            let mut navigator = mob_arc
+                .mob_entity
+                .navigator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *navigator = Navigator::wall_climber();
         };
 
         {
@@ -45,7 +65,20 @@ impl CaveSpiderEntity {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
 
             goal_selector.add_goal(1, Box::new(SwimGoal::default()));
-            goal_selector.add_goal(3, SpiderAttackGoal::new(1.0, false));
+            goal_selector.add_goal(
+                2,
+                Box::new(
+                    AvoidEntityGoal::new(&EntityType::ARMADILLO, 6.0, 1.0, 1.2)
+                        .with_avoid_predicate(|entity| {
+                            entity
+                                .cast_any()
+                                .downcast_ref::<ArmadilloEntity>()
+                                .is_none_or(|armadillo| !armadillo.is_scared())
+                        }),
+                ),
+            );
+            goal_selector.add_goal(3, Box::new(LeapAtTargetGoal::new(0.4)));
+            goal_selector.add_goal(4, SpiderAttackGoal::new(1.0, true));
             goal_selector.add_goal(5, Box::new(WanderAroundGoal::new(0.8)));
             goal_selector.add_goal(
                 6,
@@ -81,6 +114,14 @@ impl Mob for CaveSpiderEntity {
 
     fn get_mob_entity(&self) -> &MobEntity {
         &self.mob_entity
+    }
+
+    fn mob_tick(&self, _caller: &dyn EntityBase) {
+        super::spider::spider_climbing_tick(&self.mob_entity, &self.is_climbing);
+    }
+
+    fn on_climbable(&self) -> bool {
+        self.is_climbing.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn on_attack(&self, target: &dyn EntityBase) {
